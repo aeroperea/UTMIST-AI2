@@ -1118,7 +1118,8 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
                 player.on_platform = None
                 print(player.on_platform);
                 return False
-        
+        if player.start_position[1] < platform_shape.owner.body.position[1]:
+            return False;
         # Player is landing on platform from above - enable collision
         player.on_platform = platform_shape.body
         return True
@@ -1284,6 +1285,7 @@ class Stage(GameObject):
         self.shape.color = color
         self.shape.collision_type = PLATFORM + platform_id
         self.shape.platform_id = platform_id  # Store platform ID for reference
+        self.shape.owner = self;
         space.add(self.shape, self.body)
         self.width = width
         self.height = height
