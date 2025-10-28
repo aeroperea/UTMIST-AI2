@@ -13,6 +13,8 @@ b) Continue training from a specific timestep given an input `file_path`
 # ----------------------------- IMPORTS -----------------------------
 # -------------------------------------------------------------------
 
+import os
+from functools import partial
 import torch 
 import gymnasium as gym
 from torch.nn import functional as F
@@ -23,6 +25,9 @@ from stable_baselines3 import A2C, PPO, SAC, DQN, DDPG, TD3, HER
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.callbacks import CheckpointCallback
 
 from environment.agent import *
 from typing import Optional, Type, List, Tuple
@@ -587,92 +592,117 @@ def gen_reward_manager():
         'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=15))
     }
     return RewardManager(reward_functions, signal_subscriptions)
+# --- env factory ---
 
-# -------------------------------------------------------------------------
-# ----------------------------- MAIN FUNCTION -----------------------------
-# -------------------------------------------------------------------------
-'''
-The main function runs training. You can change configurations such as the Agent type or opponent specifications here.
-'''
-if __name__ == '__main__':
+def make_env(i: int,
+             ckpt_dir: str,
+             policy_partial: partial,
+             opponent_mode: str = "random",
+             resolution: CameraResolution = CameraResolution.LOW):
+    """
+    returns a thunk that builds ONE independent env (needed by VecEnv)
+    """
+    def _init():
+        # silence audio for headless workers
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
+        rm = gen_reward_manager()
+
+        sp = DirSelfPlayRandom(policy_partial, ckpt_dir) if opponent_mode == "random" \
+             else DirSelfPlayLatest(policy_partial, ckpt_dir)
+
+        opponents = {
+            'self_play': (1.0, sp),
+            # you can mix in scripted opponents if you want, e.g.:
+            # 'based_agent': (0.2, partial(BasedAgent)),
+            # 'constant_agent': (0.1, partial(ConstantAgent)),
+        }
+        opp_cfg = OpponentsCfg(opponents=opponents)
+
+        # do NOT pass a SaveHandler into workers
+        env = SelfPlayWarehouseBrawl(
+            reward_manager=rm,
+            opponent_cfg=opp_cfg,
+            save_handler=None,
+            resolution=resolution
+        )
+        return Monitor(env)  # episodic stats per worker
+    return _init
+
+
+if __name__ == "__main__":
+
+    # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
+    EXP_ROOT = "checkpoints/experiment_9"
+    os.makedirs(EXP_ROOT, exist_ok=True)
+
+    # ---- sb3 hyperparams ----
+    # note: with vectorized training, total rollout per update = n_steps * n_envs
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=8192,          # per-env rollout
-        batch_size=1024,       # must divide n_steps * n_envs
-        n_epochs=10,
-        learning_rate=3e-4,    # or a schedule
+        n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        batch_size=1024,    # must divide n_steps * n_envs
+        n_epochs=4,
+        learning_rate=3e-4,
         gamma=0.999,
         gae_lambda=0.95,
         ent_coef=0.01,
         clip_range=0.2,
-        target_kl=0.03,      # optional safety rail
+        # target_kl=0.03,   # optional safety rail
     )
-    
+
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
         net_arch=[dict(pi=[256, 256], vf=[256, 256])]
     )
 
+    # ---- vectorized env build ----
+    n_envs = 32
 
-    # Create agent
-    # my_agent = CustomAgent(sb3_class=PPO, extractor=MLPExtractor)
-
-    my_agent = CustomAgent(
+    # what the opponent loads when env.reset() happens
+    policy_partial = partial(
+        CustomAgent,
         sb3_class=PPO,
-        extractor=MLPExtractor,         # keep your custom features, or drop it
-        sb3_kwargs=sb3_kwargs,
+        extractor=MLPExtractor,
+        sb3_kwargs=sb3_kwargs,       # your CustomAgent can ignore these when loading from zip
         policy_kwargs=policy_kwargs
     )
 
-    # Start here if you want to train from scratch. e.g:
-    #my_agent = RecurrentPPOAgent()
-
-    # Start here if you want to train from a specific timestep. e.g:
-    #my_agent = RecurrentPPOAgent(file_path='checkpoints/experiment_3/rl_model_120006_steps.zip')
-
-    # Reward manager
-    reward_manager = gen_reward_manager()
-    # Self-play settings
-    # selfplay_handler = SelfPlayRandom(
-    #     partial(type(my_agent)), # Agent class and its keyword arguments
-    #                              # type(my_agent) = Agent class
-    # )
-
-    selfplay_handler = SelfPlayRandom(
-        partial(CustomAgent,
-                sb3_class=PPO,
-                extractor=MLPExtractor,
-                sb3_kwargs=sb3_kwargs,
-                policy_kwargs=policy_kwargs)
+    vec_env = SubprocVecEnv(
+        [make_env(i, EXP_ROOT, policy_partial, opponent_mode="random", resolution=CameraResolution.LOW)
+        for i in range(n_envs)],
+        start_method="spawn"  # safer with CUDA and SDL
     )
 
-    # Set save settings here:
-    save_handler = SaveHandler(
-        agent=my_agent, # Agent to save
-        save_freq=100_000, # Save frequency
-        max_saved=40, # Maximum number of saved models
-        save_path='checkpoints', # Save path
-        run_name='experiment_9',
-        mode=SaveHandlerMode.FORCE # Save mode, FORCE or RESUME
+    # tip: once stable, you can switch to SubprocVecEnv for more CPU throughput.
+
+    # ---- PPO model ----
+    model = PPO(
+        policy="MlpPolicy",
+        env=vec_env,
+        policy_kwargs=policy_kwargs,
+        **sb3_kwargs
     )
 
-    # Set opponent settings here:
-    opponent_specification = {
-                    'self_play': (8, selfplay_handler),
-                    'constant_agent': (0.5, partial(ConstantAgent)),
-                    'based_agent': (1.5, partial(BasedAgent)),
-                }
-    opponent_cfg = OpponentsCfg(opponents=opponent_specification)
-
-    train(my_agent,
-        reward_manager,
-        save_handler,
-        opponent_cfg,
-        CameraResolution.LOW,
-        train_timesteps=1_000_000_000,
-        train_logging=TrainLogging.PLOT
+    # ---- saving: from main process only ----
+    # save every ~100k global steps; callback's step counter increments ~1 per vec step call,
+    # which advances num_timesteps by n_envs, so divide by n_envs here.
+    target_save_every = 100_000
+    ckpt_cb = CheckpointCallback(
+        save_freq=max(1, target_save_every // n_envs),
+        save_path=EXP_ROOT,
+        name_prefix="rl_model",
+        save_replay_buffer=False,
+        save_vecnormalize=False,
     )
+
+    # ---- train ----
+    total_steps = 5_000_000
+    model.learn(total_timesteps=total_steps, callback=[ckpt_cb])
+
+    # final save
+    model.save(os.path.join(EXP_ROOT, "final_model"))
+    vec_env.close()
 # %%
 

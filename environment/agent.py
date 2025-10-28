@@ -548,7 +548,7 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         Args:
             reward_manager (Optional[RewardManager]): Reward manager.
             opponent_cfg (OpponentCfg): Configuration for opponents.
-            save_handler (SaveHandler): Configuration for self-play.
+            save_handler (SaveHandler | None): set only when training from a single process that writes checkpoints.
             render_every (int | None): Number of steps between a demo render (None if no rendering).
         """
         super().__init__()
@@ -561,20 +561,16 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
 
         self.games_done = 0
 
-
-        # Give OpponentCfg references, and normalize probabilities
+        # give OpponentCfg references, and normalize probabilities
         self.opponent_cfg.env = self
         self.opponent_cfg.validate_probabilities()
 
-        # Check if using self-play
-        for key, value in self.opponent_cfg.opponents.items():
-            if isinstance(value[1], SelfPlayHandler):
-                assert self.save_handler is not None, "Save handler must be specified for self-play"
-
-                # Give SelfPlayHandler references
-                selfplay_handler: SelfPlayHandler = value[1]
-                selfplay_handler.save_handler = self.save_handler
-                selfplay_handler.env = self       
+        # wire up self-play handlers without forcing a save_handler
+        for _, (prob, handler) in self.opponent_cfg.opponents.items():
+            if isinstance(handler, SelfPlayHandler):
+                handler.env = self
+                if self.save_handler is not None:
+                    handler.save_handler = self.save_handler
 
         self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=True)
         self.action_space = self.raw_env.action_space
@@ -583,7 +579,7 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         self.obs_helper = self.raw_env.obs_helper
 
     def on_training_start(self):
-        # Update SaveHandler
+        # update SaveHandler if present
         if self.save_handler is not None:
             self.save_handler.update_info()
 
@@ -593,7 +589,6 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
             self.save_handler.save_agent()
 
     def step(self, action):
-
         full_action = {
             0: action,
             1: self.opponent_agent.predict(self.opponent_obs),
@@ -607,26 +602,27 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         if self.reward_manager is None:
             reward = rewards[0]
         else:
-            reward = self.reward_manager.process(self.raw_env, 1 / 30.0)
+            # use the env fps if available
+            dt = 1.0 / getattr(self.raw_env, "fps", 30.0)
+            reward = self.reward_manager.process(self.raw_env, dt)
 
         return observations[0], reward, terminated, truncated, info
 
     def reset(self, seed=None, options=None):
-        # Reset MalachiteEnv
         observations, info = self.raw_env.reset()
 
-        self.reward_manager.reset()
+        if self.reward_manager is not None:
+            self.reward_manager.reset()
 
-        # Select agent
+        # select agent
         new_agent: Agent = self.opponent_cfg.on_env_reset()
         if new_agent is not None:
             self.opponent_agent: Agent = new_agent
         self.opponent_obs = observations[1]
 
-
         self.games_done += 1
-        #if self.games_done % self.render_every == 0:
-            #self.render_out_video()
+        # if self.render_every is not None and self.games_done % self.render_every == 0:
+        #     self.render_out_video()
 
         return observations[0], info
 
@@ -636,6 +632,7 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
 
     def close(self):
         pass
+
 
 
 # ## Run Match
