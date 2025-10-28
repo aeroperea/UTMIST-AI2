@@ -624,7 +624,8 @@ def make_env(i: int,
             reward_manager=rm,
             opponent_cfg=opp_cfg,
             save_handler=None,
-            resolution=resolution
+            resolution=resolution,
+            train_mode=True
         )
         return Monitor(env)  # episodic stats per worker
     return _init
@@ -642,14 +643,14 @@ if __name__ == "__main__":
         device="cuda",
         verbose=1,
         n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=1024,    # must divide n_steps * n_envs
-        n_epochs=4,
-        learning_rate=3e-4,
+        batch_size=4096,    # must divide n_steps * n_envs
+        n_epochs=10,
+        learning_rate=8e-4,
         gamma=0.999,
         gae_lambda=0.95,
         ent_coef=0.01,
         clip_range=0.2,
-        # target_kl=0.03,   # optional safety rail
+        target_kl=0.03,   # optional safety rail
     )
 
     policy_kwargs = dict(

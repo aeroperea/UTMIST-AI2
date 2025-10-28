@@ -514,7 +514,7 @@ class OpponentsCfg():
         )[0]
 
         # If self-play is selected, return the trained model
-        print(f'Selected {agent_name}')
+        #print(f'Selected {agent_name}')
         if agent_name == "self_play":
             selfplay_handler: SelfPlayHandler = self.opponents[agent_name][1]
             return selfplay_handler.get_opponent()
@@ -541,7 +541,8 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
                  opponent_cfg: OpponentsCfg=OpponentsCfg(),
                  save_handler: Optional[SaveHandler]=None,
                  render_every: int | None = None,
-                 resolution: CameraResolution=CameraResolution.LOW):
+                 resolution: CameraResolution=CameraResolution.LOW, 
+                 train_mode=True):
         """
         Initializes the environment.
 
@@ -553,6 +554,7 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         """
         super().__init__()
 
+        self.train_mode = train_mode
         self.reward_manager = reward_manager
         self.save_handler = save_handler
         self.opponent_cfg = opponent_cfg
