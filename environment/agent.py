@@ -1,43 +1,77 @@
-from environment.environment import ActHelper, AirTurnaroundState, Animation, AnimationSprite2D, AttackState, BackDashState, Camera, CameraResolution, Capsule, CapsuleCollider, Cast, CastFrameChangeHolder, CasterPositionChange, CasterVelocityDampXY, CasterVelocitySet, CasterVelocitySetXY, CompactMoveState, DashState, DealtPositionTarget, DodgeState, Facing, GameObject, Ground, GroundState, HurtboxPositionChange, InAirState, KOState, KeyIconPanel, KeyStatus, MalachiteEnv, MatchStats, MoveManager, MoveType, ObsHelper, Particle, Player, PlayerInputHandler, PlayerObjectState, PlayerStats, Power, RenderMode, Result, Signal, SprintingState, Stage, StandingState, StunState, Target, TauntState, TurnaroundState, UIHandler, WalkingState, WarehouseBrawl, hex_to_rgb
+import os as _os
+HEADLESS = (_os.getenv("TRAIN_MODE", "0") == "1") or (_os.getenv("HEADLESS", "0") == "1")
+if HEADLESS:
+    _os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+# keep the same public api import from environment; environment itself gates heavy libs
+from environment.environment import (
+    ActHelper, AirTurnaroundState, Animation, AnimationSprite2D, AttackState, BackDashState,
+    Camera, CameraResolution, Capsule, CapsuleCollider, Cast, CastFrameChangeHolder,
+    CasterPositionChange, CasterVelocityDampXY, CasterVelocitySet, CasterVelocitySetXY,
+    CompactMoveState, DashState, DealtPositionTarget, DodgeState, Facing, GameObject, Ground,
+    GroundState, HurtboxPositionChange, InAirState, KOState, KeyIconPanel, KeyStatus, MalachiteEnv,
+    MatchStats, MoveManager, MoveType, ObsHelper, Particle, Player, PlayerInputHandler,
+    PlayerObjectState, PlayerStats, Power, RenderMode, Result, Signal, SprintingState, Stage,
+    StandingState, StunState, Target, TauntState, TurnaroundState, UIHandler, WalkingState,
+    WarehouseBrawl, hex_to_rgb
+)
 
 import warnings
-from typing import TYPE_CHECKING, Any, Generic, \
- SupportsFloat, TypeVar, Type, Optional, List, Dict, Callable
+from typing import TYPE_CHECKING, Any, Generic, SupportsFloat, TypeVar, Type, Optional, List, Dict, Callable, Tuple
 from enum import Enum, auto
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, MISSING
 from collections import defaultdict
 from functools import partial
-from typing import Tuple, Any
-
-from PIL import Image, ImageSequence
-import matplotlib.pyplot as plt
 
 import gdown, os, math, random, shutil, json
-
 import numpy as np
 import torch
 from torch import nn
-
 import gymnasium
 from gymnasium import spaces
-
-import pygame
-from pygame.locals import QUIT
-import pygame.gfxdraw
 import pymunk
-import pymunk.pygame_util
-from pymunk.space_debug_draw_options import SpaceDebugColor
-from pymunk.vec2d import Vec2d
 
-import cv2
-import skimage.transform as st
-import skvideo
-import skvideo.io
-from IPython.display import Video
+# heavy viz/io — only import when not headless; else define names as None to keep references valid
+try:
+    if not HEADLESS:
+        from PIL import Image, ImageSequence
+        import matplotlib.pyplot as plt
+    else:
+        raise ImportError("headless")
+except Exception:
+    Image = None
+    ImageSequence = None
+    plt = None
+
+try:
+    if not HEADLESS:
+        import pygame
+        from pygame.locals import QUIT
+        import pygame.gfxdraw
+    else:
+        raise ImportError("headless")
+except Exception:
+    pygame = None
+    QUIT = None
+
+try:
+    if not HEADLESS:
+        import cv2
+        import skimage.transform as st
+        import skvideo, skvideo.io
+        from IPython.display import Video
+    else:
+        raise ImportError("headless")
+except Exception:
+    cv2 = None
+    st = None
+    skvideo = None
+    Video = None
 
 from stable_baselines3.common.monitor import Monitor
-
 
 # ## Agents
 
@@ -440,43 +474,43 @@ class DirSelfPlayRandom(SelfPlayHandler):
         path = os.path.join(self.ckpt_dir, chosen) if chosen else None
         return self.get_model_from_path(path)
 
-def make_env(i: int,
-             ckpt_dir: str,
-             policy_partial: partial,
-             opponent_mode: str = "random",   # "latest" or "random"
-             resolution=CameraResolution.LOW):
-    """
-    returns a function that builds ONE env instance (needed by VecEnv).
-    """
-    def _init():
-        # fresh reward manager per worker
-        rm = gen_reward_manager()
+# def make_env(i: int,
+#              ckpt_dir: str,
+#              policy_partial: partial,
+#              opponent_mode: str = "random",   # "latest" or "random"
+#              resolution=CameraResolution.LOW):
+#     """
+#     returns a function that builds ONE env instance (needed by VecEnv).
+#     """
+#     def _init():
+#         # fresh reward manager per worker
+#         rm = gen_reward_manager()
 
-        # self-play handler per worker; points at checkpoint directory
-        if opponent_mode == "latest":
-            sp = DirSelfPlayLatest(policy_partial, ckpt_dir)
-        else:
-            sp = DirSelfPlayRandom(policy_partial, ckpt_dir)
+#         # self-play handler per worker; points at checkpoint directory
+#         if opponent_mode == "latest":
+#             sp = DirSelfPlayLatest(policy_partial, ckpt_dir)
+#         else:
+#             sp = DirSelfPlayRandom(policy_partial, ckpt_dir)
 
-        # wire opponents
-        opponents = {
-            'self_play': (1.0, sp),                 # you can mix others if you want
-            # 'constant_agent': (0.2, partial(ConstantAgent)),
-            # 'based_agent': (0.2, partial(BasedAgent)),
-        }
-        opp_cfg = OpponentsCfg(opponents=opponents)
+#         # wire opponents
+#         opponents = {
+#             'self_play': (1.0, sp),                 # you can mix others if you want
+#             # 'constant_agent': (0.2, partial(ConstantAgent)),
+#             # 'based_agent': (0.2, partial(BasedAgent)),
+#         }
+#         opp_cfg = OpponentsCfg(opponents=opponents)
 
-        # no save handler inside workers (saving handled by callback in main proc)
-        env = SelfPlayWarehouseBrawl(
-            reward_manager=rm,
-            opponent_cfg=opp_cfg,
-            save_handler=None,
-            resolution=resolution
-        )
+#         # no save handler inside workers (saving handled by callback in main proc)
+#         env = SelfPlayWarehouseBrawl(
+#             reward_manager=rm,
+#             opponent_cfg=opp_cfg,
+#             save_handler=None,
+#             resolution=resolution
+#         )
 
-        # SB3 likes Monitor for episodic stats per worker
-        return Monitor(env)
-    return _init
+#         # SB3 likes Monitor for episodic stats per worker
+#         return Monitor(env)
+#     return _init
 
 @dataclass
 class OpponentsCfg():
@@ -542,7 +576,7 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
                  save_handler: Optional[SaveHandler]=None,
                  render_every: int | None = None,
                  resolution: CameraResolution=CameraResolution.LOW, 
-                 train_mode=True):
+                 train_mode=True, mode: RenderMode=RenderMode.RGB_ARRAY):
         """
         Initializes the environment.
 
@@ -560,6 +594,7 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         self.opponent_cfg = opponent_cfg
         self.render_every = render_every
         self.resolution = resolution
+        self.mode = mode
 
         self.games_done = 0
 
@@ -574,7 +609,7 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
                 if self.save_handler is not None:
                     handler.save_handler = self.save_handler
 
-        self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=True)
+        self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=True, mode=mode)
         self.action_space = self.raw_env.action_space
         self.act_helper = self.raw_env.act_helper
         self.observation_space = self.raw_env.observation_space

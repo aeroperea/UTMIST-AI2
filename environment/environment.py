@@ -539,7 +539,7 @@ class Camera():
     pos: list[int] = [0,0]
     zoom: float = 2.0
 
-    def scale_background(self, env, bg_image: pygame.image = pygame.image.load('environment/assets/map/background.png')) -> None:
+    def scale_background(self, env, bg_image) -> None:
         resolution: Tuple[int] = env.resolution
         window_height, window_width = self.resolutions[resolution]
 
@@ -630,6 +630,9 @@ class Camera():
         return new_x, new_y
 
     def get_frame(self, env, mode=RenderMode.RGB_ARRAY, has_hitboxes=False):
+        if mode == RenderMode.NONE:
+            return None
+        
         if not self.is_rendering:
             self._setup_render(mode)
             self.is_rendering = True
@@ -659,7 +662,7 @@ class Camera():
         draw_options = DrawOptions(self.canvas)
         draw_options.transform = transform
 
-        # Draw PyMunk objects
+        # Draw PyMunk objectsfrom PIL import Image, ImageSequence 
         #self.space.debug_draw(draw_options)
 
         #print(self.env.space)
@@ -853,6 +856,8 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
         self.resolution = resolution
         self.train_mode = train_mode
 
+        print(f'mode: {self.mode} train_mode: {train_mode}')
+
         self.agents = [0, 1] # Agent 0, agent 1
         self.logger = ['', '']
 
@@ -879,6 +884,9 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
         # Observation Space
         self.observation_space = self.get_observation_space()
 
+        self._obs_dim = int(self.observation_space.shape[0])
+        self._obs_buf = np.zeros((2, self._obs_dim), dtype=np.float32)
+
         self.camera = Camera()
 
         # Action Space
@@ -891,7 +899,10 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
             self.action_spaces[agent_id] = self.action_space
             self.observation_spaces[agent_id] = self.observation_space
 
-        
+        self.rewards = {0: 0.0, 1: 0.0}
+        self.logger  = [{}, {}]
+
+
         self.load_attacks()
 
         self.reset()
@@ -1072,9 +1083,10 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
     def step(self, action: dict[int, np.ndarray]):
         # Create new rewards dict
         self.cur_action = action
-        self.rewards = {agent: 0 for agent in self.agents}
+        self.rewards[0] = 0.0
+        self.rewards[1] = 0.0
+        self.logger[0].clear(); self.logger[1].clear()
         self.terminated = False
-        self.logger = ['', '']
 
         self.camera.process()
 
@@ -1152,7 +1164,10 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
 
         self.players: list[Player] = []
         self.camera.reset(self)
-        self.camera.scale_background(self)
+        if self.mode != RenderMode.NONE:
+            if not hasattr(self.camera, "_bg_image"):
+                self.camera._bg_image = pygame.image.load('environment/assets/map/background.png')
+            self.camera.scale_background(self, self.camera._bg_image)
         self._setup()
 
         return {agent: self.observe(agent) for agent in self.agents}, {}
@@ -1163,9 +1178,21 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
         # lh += [-1, -1], [1, 1] # 2d vector of global position
         # lh += [-1, -1], [1, 1] # 2d vector of global velocity
 
-        obs = []
-        obs += self.players[agent].get_obs()
-        obs += self.players[1-agent].get_obs()
+        b = self._obs_buf[agent]
+        i = 0
+        v = self.players[agent].get_obs()
+        n = len(v); b[i:i+n] = v; i += n
+        v = self.players[1-agent].get_obs()
+        n = len(v); b[i:i+n] = v
+        return b
+
+
+        # original
+        # obs = []
+        # obs += self.players[agent].get_obs()
+        # obs += self.players[1-agent].get_obs()
+
+
         #obs += self.players[agent].body.position.x, self.players[agent].body.position.y
         #obs += self.players[agent].body.position.x, self.players[agent].body.position.y
         #obs += self.players[agent].body.velocity.x, self.players[agent].body.velocity.y
