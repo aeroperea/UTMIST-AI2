@@ -42,17 +42,32 @@ class SB3Agent(Agent):
     def __init__(
             self,
             sb3_class: Optional[Type[BaseAlgorithm]] = PPO,
-            file_path: Optional[str] = None
-    ):
-        self.sb3_class = sb3_class
-        super().__init__(file_path)
+            file_path: Optional[str] = None,
+            extractor: BaseFeaturesExtractor = None,
+            sb3_kwargs: Optional[dict] = None,         # <— new
+            policy_kwargs: Optional[dict] = None       # <— new
+        ):
+            self.sb3_class = sb3_class
+            self.extractor = extractor
+            self.sb3_kwargs = sb3_kwargs or {}
+            self.policy_kwargs = policy_kwargs or {}
+            super().__init__(file_path)
 
     def _initialize(self) -> None:
         if self.file_path is None:
-            self.model = self.sb3_class("MlpPolicy", self.env, verbose=0, n_steps=30*90*3, batch_size=128, ent_coef=0.01)
+            # merge extractor policy kwargs (if any) with user policy_kwargs
+            ek = self.extractor.get_policy_kwargs() if self.extractor else {}
+            pk = {**ek, **self.policy_kwargs}
+            self.model = self.sb3_class(
+                "MlpPolicy",
+                self.env,
+                policy_kwargs=pk,
+                **self.sb3_kwargs
+            )
             del self.env
         else:
-            self.model = self.sb3_class.load(self.file_path)
+            device = self.sb3_kwargs.get("device", "auto")
+            self.model = self.sb3_class.load(self.file_path, device=device)
 
     def _gdown(self) -> str:
         # Call gdown to your link
@@ -302,24 +317,39 @@ class MLPExtractor(BaseFeaturesExtractor):
         )
     
 class CustomAgent(Agent):
-    def __init__(self, sb3_class: Optional[Type[BaseAlgorithm]] = PPO, file_path: str = None, extractor: BaseFeaturesExtractor = None):
+    def __init__(
+        self,
+        sb3_class: Optional[Type[BaseAlgorithm]] = PPO,
+        file_path: Optional[str] = None,
+        extractor: Optional[Type[BaseFeaturesExtractor]] = None,  # pass the class (e.g., MLPExtractor)
+        sb3_kwargs: Optional[dict] = None,                        # new
+        policy_kwargs: Optional[dict] = None                      # new
+    ):
         self.sb3_class = sb3_class
         self.extractor = extractor
+        self.sb3_kwargs = sb3_kwargs or {}
+        self.policy_kwargs = policy_kwargs or {}
         super().__init__(file_path)
-    
+
     def _initialize(self) -> None:
         if self.file_path is None:
-            self.model = self.sb3_class("MlpPolicy", self.env, policy_kwargs=self.extractor.get_policy_kwargs(), verbose=0, n_steps=30*90*3, batch_size=128, ent_coef=0.01)
+            # merge extractor-provided policy kwargs with user overrides
+            ek = self.extractor.get_policy_kwargs() if self.extractor else {}
+            pk = {**ek, **self.policy_kwargs}
+            self.model = self.sb3_class(
+                "MlpPolicy",
+                self.env,
+                policy_kwargs=pk,
+                **self.sb3_kwargs
+            )
             del self.env
         else:
-            self.model = self.sb3_class.load(self.file_path)
+            # allow device override on load
+            device = self.sb3_kwargs.get("device", "auto")
+            self.model = self.sb3_class.load(self.file_path, device=device)
 
-    def _gdown(self) -> str:
-        # Call gdown to your link
+    def _gdown(self) -> Optional[str]:
         return
-
-    #def set_ignore_grad(self) -> None:
-        #self.model.set_ignore_act_grad(True)
 
     def predict(self, obs):
         action, _ = self.model.predict(obs)
@@ -331,10 +361,7 @@ class CustomAgent(Agent):
     def learn(self, env, total_timesteps, log_interval: int = 1, verbose=0):
         self.model.set_env(env)
         self.model.verbose = verbose
-        self.model.learn(
-            total_timesteps=total_timesteps,
-            log_interval=log_interval,
-        )
+        self.model.learn(total_timesteps=total_timesteps, log_interval=log_interval)
 
 # --------------------------------------------------------------------------------
 # ----------------------------- REWARD FUNCTIONS API -----------------------------
@@ -568,8 +595,36 @@ def gen_reward_manager():
 The main function runs training. You can change configurations such as the Agent type or opponent specifications here.
 '''
 if __name__ == '__main__':
+
+    sb3_kwargs = dict(
+        device="cuda",
+        verbose=1,
+        n_steps=8192,          # per-env rollout
+        batch_size=1024,       # must divide n_steps * n_envs
+        n_epochs=10,
+        learning_rate=3e-4,    # or a schedule
+        gamma=0.999,
+        gae_lambda=0.95,
+        ent_coef=0.01,
+        clip_range=0.2,
+        target_kl=0.03,      # optional safety rail
+    )
+    
+    policy_kwargs = dict(
+        activation_fn=nn.SiLU,
+        net_arch=[dict(pi=[256, 256], vf=[256, 256])]
+    )
+
+
     # Create agent
-    my_agent = CustomAgent(sb3_class=PPO, extractor=MLPExtractor)
+    # my_agent = CustomAgent(sb3_class=PPO, extractor=MLPExtractor)
+
+    my_agent = CustomAgent(
+        sb3_class=PPO,
+        extractor=MLPExtractor,         # keep your custom features, or drop it
+        sb3_kwargs=sb3_kwargs,
+        policy_kwargs=policy_kwargs
+    )
 
     # Start here if you want to train from scratch. e.g:
     #my_agent = RecurrentPPOAgent()
@@ -580,9 +635,17 @@ if __name__ == '__main__':
     # Reward manager
     reward_manager = gen_reward_manager()
     # Self-play settings
+    # selfplay_handler = SelfPlayRandom(
+    #     partial(type(my_agent)), # Agent class and its keyword arguments
+    #                              # type(my_agent) = Agent class
+    # )
+
     selfplay_handler = SelfPlayRandom(
-        partial(type(my_agent)), # Agent class and its keyword arguments
-                                 # type(my_agent) = Agent class
+        partial(CustomAgent,
+                sb3_class=PPO,
+                extractor=MLPExtractor,
+                sb3_kwargs=sb3_kwargs,
+                policy_kwargs=policy_kwargs)
     )
 
     # Set save settings here:
@@ -611,3 +674,5 @@ if __name__ == '__main__':
         train_timesteps=1_000_000_000,
         train_logging=TrainLogging.PLOT
     )
+# %%
+

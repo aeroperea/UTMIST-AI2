@@ -23,6 +23,7 @@ import gymnasium
 from gymnasium import spaces
 
 import pygame
+from pygame.locals import QUIT
 import pygame.gfxdraw
 import pymunk
 import pymunk.pygame_util
@@ -416,6 +417,66 @@ class SelfPlayRandom(SelfPlayHandler):
         assert self.save_handler is not None, "Save handler must be specified for self-play"
         chosen_path = self.save_handler.get_random_model_path()
         return self.get_model_from_path(chosen_path)
+    
+
+# simple directory-backed self-play handlers (avoid passing SaveHandler into subprocesses)
+class DirSelfPlayLatest(SelfPlayHandler):
+    def __init__(self, agent_partial: partial, ckpt_dir: str):
+        super().__init__(agent_partial)
+        self.ckpt_dir = ckpt_dir
+    def get_opponent(self) -> Agent:
+        files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
+        chosen = max(files, key=lambda f: int(f.split("_")[-2])) if files else None
+        path = os.path.join(self.ckpt_dir, chosen) if chosen else None
+        return self.get_model_from_path(path)
+
+class DirSelfPlayRandom(SelfPlayHandler):
+    def __init__(self, agent_partial: partial, ckpt_dir: str):
+        super().__init__(agent_partial)
+        self.ckpt_dir = ckpt_dir
+    def get_opponent(self) -> Agent:
+        files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
+        chosen = random.choice(files) if files else None
+        path = os.path.join(self.ckpt_dir, chosen) if chosen else None
+        return self.get_model_from_path(path)
+
+def make_env(i: int,
+             ckpt_dir: str,
+             policy_partial: partial,
+             opponent_mode: str = "random",   # "latest" or "random"
+             resolution=CameraResolution.LOW):
+    """
+    returns a function that builds ONE env instance (needed by VecEnv).
+    """
+    def _init():
+        # fresh reward manager per worker
+        rm = gen_reward_manager()
+
+        # self-play handler per worker; points at checkpoint directory
+        if opponent_mode == "latest":
+            sp = DirSelfPlayLatest(policy_partial, ckpt_dir)
+        else:
+            sp = DirSelfPlayRandom(policy_partial, ckpt_dir)
+
+        # wire opponents
+        opponents = {
+            'self_play': (1.0, sp),                 # you can mix others if you want
+            # 'constant_agent': (0.2, partial(ConstantAgent)),
+            # 'based_agent': (0.2, partial(BasedAgent)),
+        }
+        opp_cfg = OpponentsCfg(opponents=opponents)
+
+        # no save handler inside workers (saving handled by callback in main proc)
+        env = SelfPlayWarehouseBrawl(
+            reward_manager=rm,
+            opponent_cfg=opp_cfg,
+            save_handler=None,
+            resolution=resolution
+        )
+
+        # SB3 likes Monitor for episodic stats per worker
+        return Monitor(env)
+    return _init
 
 @dataclass
 class OpponentsCfg():
@@ -1042,19 +1103,31 @@ def train(agent: Agent,
 import pygame
 from pygame.locals import QUIT
 
+def _safe_init_audio() -> bool:
+    # try system pulse first, then dummy (silent), else disable audio
+    for drv in (None, "pulse", "dummy"):
+        try:
+            if drv is not None:
+                os.environ["SDL_AUDIODRIVER"] = drv
+            pygame.mixer.init()
+            return True
+        except pygame.error:
+            continue
+    return False
+
 def run_real_time_match(agent_1: UserInputAgent, agent_2: Agent, max_timesteps=30*90, resolution=CameraResolution.LOW):
     pygame.init()
 
-    pygame.mixer.init()
+    audio_ok = _safe_init_audio()  # replaces: pygame.mixer.init()
 
-    # Load your soundtrack (must be .wav, .ogg, or supported format)
-    pygame.mixer.music.load("environment/assets/soundtrack.mp3")
-
-    # Play it on loop: -1 = loop forever
-    pygame.mixer.music.play(-1)
-
-    # Optional: set volume (0.0 to 1.0)
-    pygame.mixer.music.set_volume(0.2)
+    # load soundtrack only if audio is available
+    if audio_ok:
+        try:
+            pygame.mixer.music.load("environment/assets/soundtrack.mp3")
+            pygame.mixer.music.play(-1)
+            pygame.mixer.music.set_volume(0.2)
+        except Exception as e:
+            print(f"audio load failed: {e}")  # non-fatal
 
     resolutions = {
         CameraResolution.LOW: (480, 720),
