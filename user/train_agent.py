@@ -642,14 +642,14 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=4096,    # must divide n_steps * n_envs
-        n_epochs=10,
-        learning_rate=8e-4,
+        n_steps=512,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        batch_size=2048,    # must divide n_steps * n_envs
+        n_epochs=7,
+        learning_rate=3e-4,
         gamma=0.999,
         gae_lambda=0.95,
-        ent_coef=0.01,
-        clip_range=0.2,
+        ent_coef=0.003,
+        clip_range=0.15,
         target_kl=0.03,   # optional safety rail
     )
 
