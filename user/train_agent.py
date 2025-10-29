@@ -806,7 +806,7 @@ if __name__ == "__main__":
             print("load checkpoint was false starting fresh")
 
     # saving
-    target_save_every = 100_000
+    target_save_every = 500_000
     ckpt_cb = CheckpointCallback(
         save_freq=max(1, target_save_every // n_envs),
         save_path=EXP_ROOT,
@@ -836,7 +836,7 @@ if __name__ == "__main__":
     timing_cb = PhaseTimerCallback(verbose=1)
 
     # ---- train ----
-    total_steps = 5_000_000
+    total_steps = 7_000_000
     model.learn(total_timesteps=total_steps, callback=CallbackList(
                                                         [ckpt_cb, 
                                                          vec_cb, 
