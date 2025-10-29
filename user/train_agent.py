@@ -31,7 +31,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
-from stable_baselines3.common.callbacks import CheckpointCallback, EveryNTimesteps, CallbackList
+from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
 
 from environment.agent import *
 from typing import Optional, Type, List, Tuple
@@ -725,15 +725,23 @@ if __name__ == "__main__":
         save_vecnormalize=False,
     )
 
-    class SaveVecNormCallback(EveryNTimesteps):
-        def __init__(self, n_steps: int, path: str):
-            super().__init__(n_steps=n_steps)
+    class SaveVecNormCallback(BaseCallback):
+        # minimal, saves vecnormalize stats every save_freq calls
+        def __init__(self, save_freq: int, path: str, verbose: int = 0):
+            super().__init__(verbose)
+            self.save_freq = max(1, int(save_freq))
             self.path = path
-        def _on_event(self) -> None:
-            # saves running means/vars so resume is stable
-            self.model.get_vec_normalize_env().save(self.path)
 
-    vec_cb = SaveVecNormCallback(n_steps=max(1, target_save_every // n_envs), path=vn_path)
+        def _on_step(self) -> bool:
+            if self.n_calls % self.save_freq == 0:
+                vec = self.model.get_vec_normalize_env()
+                if vec is not None:
+                    vec.save(self.path)
+                    if self.verbose >= 1:
+                        print(f"[vecnorm] saved {self.path} at {self.num_timesteps} steps")
+            return True
+
+    vec_cb = SaveVecNormCallback(n_steps=target_save_every, path=vn_path)
 
     # ---- train ----
     total_steps = 5_000_000
