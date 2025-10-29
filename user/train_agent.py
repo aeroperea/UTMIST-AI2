@@ -32,7 +32,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
-
+#
 from environment.agent import *
 from typing import Optional, Type, List, Tuple
 
@@ -280,7 +280,7 @@ class ClockworkAgent(Agent):
         return action
     
 class MLPPolicy(nn.Module):
-    def __init__(self, obs_dim: int = 64, action_dim: int = 10, hidden_dim: int = 64):
+    def __init__(self, obs_dim: int = 64, out_dim: int = 64, hidden_dim: int = 64):
         """
         A 3-layer MLP policy:
         obs -> Linear(hidden_dim) -> ReLU -> Linear(hidden_dim) -> ReLU -> Linear(action_dim)
@@ -292,7 +292,7 @@ class MLPPolicy(nn.Module):
         # Hidden layer
         self.fc2 = nn.Linear(hidden_dim, hidden_dim, dtype=torch.float32)
         # Output layer
-        self.fc3 = nn.Linear(hidden_dim, hidden_dim, dtype=torch.float32)
+        self.fc3 = nn.Linear(hidden_dim, out_dim, dtype=torch.float32)
 
     def forward(self, obs):
         """
@@ -308,10 +308,10 @@ class MLPExtractor(BaseFeaturesExtractor):
     Class that defines an MLP Base Features Extractor
     '''
     def __init__(self, observation_space: gym.Space, features_dim: int = 64, hidden_dim: int = 64):
-        super(MLPExtractor, self).__init__(observation_space, features_dim)
+        super().__init__(observation_space, features_dim)
         self.model = MLPPolicy(
-            obs_dim=observation_space.shape[0], 
-            action_dim=10,
+            obs_dim=observation_space.shape[0],
+            out_dim=features_dim,
             hidden_dim=hidden_dim,
         )
     
@@ -596,6 +596,37 @@ def gen_reward_manager():
         'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=15))
     }
     return RewardManager(reward_functions, signal_subscriptions)
+
+class RewardBreakdownCallback(BaseCallback):
+    def __init__(self, verbose: int = 0):
+        super().__init__(verbose)
+        self._acc = {}
+        self._n = 0
+
+    def _on_step(self) -> bool:
+        # on-policy: `infos` present during rollout collection
+        infos = self.locals.get("infos", [])
+        for inf in infos:
+            if not inf:
+                continue
+            terms = inf.get("rew_terms")
+            if terms:
+                for k, v in terms.items():
+                    self._acc[k] = self._acc.get(k, 0.0) + float(v)
+                self._acc["_signals"] = self._acc.get("_signals", 0.0) + float(inf.get("rew_signals", 0.0))
+                self._n += 1
+        return True
+
+    def _on_rollout_end(self) -> None:
+        if self._n > 0:
+            for k, s in self._acc.items():
+                mean = s / self._n
+                self.logger.record(f"reward_terms/{k}", mean)
+                if self.verbose:
+                    print(f"[rew] {k}: {mean:.5f}")
+        self._acc.clear()
+        self._n = 0
+
 # --- env factory ---
 
 def make_env(i: int,
@@ -718,9 +749,7 @@ if __name__ == "__main__":
         else:
             print("load checkpoint was false starting fresh")
 
-    # ---- saving: from main process only ----
-    # save every ~100k global steps; callback's step counter increments ~1 per vec step call,
-    # which advances num_timesteps by n_envs, so divide by n_envs here.
+    # saving
     target_save_every = 100_000
     ckpt_cb = CheckpointCallback(
         save_freq=max(1, target_save_every // n_envs),
@@ -729,28 +758,29 @@ if __name__ == "__main__":
         save_replay_buffer=False,
         save_vecnormalize=False,
     )
-
+        
     class SaveVecNormCallback(BaseCallback):
-        # minimal, saves vecnormalize stats every save_freq calls
         def __init__(self, save_freq: int, path: str, verbose: int = 0):
             super().__init__(verbose)
             self.save_freq = max(1, int(save_freq))
             self.path = path
-
+            self._vec = None
         def _on_step(self) -> bool:
             if self.n_calls % self.save_freq == 0:
-                vec = self.model.get_vec_normalize_env()
-                if vec is not None:
-                    vec.save(self.path)
+                if self._vec is None:
+                    self._vec = self.model.get_vec_normalize_env()
+                if self._vec is not None:
+                    self._vec.save(self.path)
                     if self.verbose >= 1:
                         print(f"[vecnorm] saved {self.path} at {self.num_timesteps} steps")
             return True
 
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
+    rb_cb  = RewardBreakdownCallback(verbose=1)
 
     # ---- train ----
     total_steps = 5_000_000
-    model.learn(total_timesteps=total_steps, callback=CallbackList([ckpt_cb, vec_cb]))
+    model.learn(total_timesteps=total_steps, callback=CallbackList([ckpt_cb, vec_cb, rb_cb]))
 
     # final save
     model.save(os.path.join(EXP_ROOT, "final_model"))

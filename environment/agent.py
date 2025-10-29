@@ -228,55 +228,61 @@ class RewTerm():
 
 
 class RewardManager():
-    """Reward terms for the MDP."""
-
-    # (1) Constant running reward
-    def __init__(self,
-                 reward_functions: Optional[Dict[str, RewTerm]]=None,
-                 signal_subscriptions: Optional[Dict[str, Tuple[str, RewTerm]]]=None) -> None:
+    def __init__(self, reward_functions=None, signal_subscriptions=None, log_terms: bool = True) -> None:
         self.reward_functions = reward_functions
         self.signal_subscriptions = signal_subscriptions
         self.total_reward = 0.0
         self.collected_signal_rewards = 0.0
+        self.log_terms = log_terms
+        if self.log_terms:
+            self.last_terms: dict[str, float] = {}
+            self.last_signals: float = 0.0
 
     def subscribe_signals(self, env) -> None:
-        if self.signal_subscriptions is None:
+        if not self.signal_subscriptions:
             return
         for _, (name, term_cfg) in self.signal_subscriptions.items():
-            getattr(env, name).connect(partial(self._signal_func, term_cfg))
-
-    def _signal_func(self, term_cfg: RewTerm, *args, **kwargs):
-        term_partial = partial(term_cfg.func, **term_cfg.params)
-        self.collected_signal_rewards += term_partial(*args, **kwargs) * term_cfg.weight
+            # bind once; no partial allocation inside the hot path
+            def _cb(*args, _tc=term_cfg, **kwargs):
+                v = _tc.func(*args, **_tc.params, **kwargs)
+                self.collected_signal_rewards += v * _tc.weight
+            getattr(env, name).connect(_cb)
 
     def process(self, env, dt) -> float:
-        # reset computation
         reward_buffer = 0.0
-        # iterate over all the reward terms
-        if self.reward_functions is not None:
+        terms_log = {} if self.log_terms else None
+        if self.reward_functions:
             for name, term_cfg in self.reward_functions.items():
-                # skip if weight is zero (kind of a micro-optimization)
                 if term_cfg.weight == 0.0:
                     continue
-                # compute term's value
                 value = term_cfg.func(env, **term_cfg.params) * term_cfg.weight
-                # update total reward
                 reward_buffer += value
+                if terms_log is not None:
+                    terms_log[name] = value
 
         reward = reward_buffer + self.collected_signal_rewards
-        self.collected_signal_rewards = 0.0
+        if self.log_terms:
+            self.last_terms = terms_log
+            self.last_signals = float(self.collected_signal_rewards)
 
+        self.collected_signal_rewards = 0.0
         self.total_reward += reward
 
-        log = env.logger[0]
-        log['reward'] = f'{reward_buffer:.3f}'
-        log['total_reward'] = f'{self.total_reward:.3f}'
-        env.logger[0] = log
+        if self.log_terms:
+            # avoid string formatting if no logger
+            if hasattr(env, "logger"):
+                log = env.logger[0]
+                log["reward"] = f"{float(reward_buffer):.3f}"
+                log["total_reward"] = f"{float(self.total_reward):.3f}"
+                env.logger[0] = log
         return reward
 
     def reset(self):
-        self.total_reward = 0
-        self.collected_signal_rewards
+        self.total_reward = 0.0
+        self.collected_signal_rewards = 0.0
+        if self.log_terms:
+            self.last_terms = {}
+            self.last_signals = 0.0
 
 
 # ### Save, Self-play, and Opponents
@@ -458,9 +464,16 @@ class DirSelfPlayLatest(SelfPlayHandler):
     def __init__(self, agent_partial: partial, ckpt_dir: str):
         super().__init__(agent_partial)
         self.ckpt_dir = ckpt_dir
-    def get_opponent(self) -> Agent:
+        self._cache = []
+        self._last_count = -1
+    def _refresh(self):
         files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
-        chosen = max(files, key=lambda f: int(f.split("_")[-2])) if files else None
+        if len(files) != self._last_count:
+            self._cache = sorted(files, key=lambda f: int(f.split("_")[-2]))
+            self._last_count = len(files)
+    def get_opponent(self) -> Agent:
+        self._refresh()
+        chosen = self._cache[-1] if self._cache else None
         path = os.path.join(self.ckpt_dir, chosen) if chosen else None
         return self.get_model_from_path(path)
 
@@ -468,49 +481,18 @@ class DirSelfPlayRandom(SelfPlayHandler):
     def __init__(self, agent_partial: partial, ckpt_dir: str):
         super().__init__(agent_partial)
         self.ckpt_dir = ckpt_dir
-    def get_opponent(self) -> Agent:
+        self._cache = []
+        self._last_count = -1
+    def _refresh(self):
         files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
-        chosen = random.choice(files) if files else None
+        if len(files) != self._last_count:
+            self._cache = files
+            self._last_count = len(files)
+    def get_opponent(self) -> Agent:
+        self._refresh()
+        chosen = random.choice(self._cache) if self._cache else None
         path = os.path.join(self.ckpt_dir, chosen) if chosen else None
         return self.get_model_from_path(path)
-
-# def make_env(i: int,
-#              ckpt_dir: str,
-#              policy_partial: partial,
-#              opponent_mode: str = "random",   # "latest" or "random"
-#              resolution=CameraResolution.LOW):
-#     """
-#     returns a function that builds ONE env instance (needed by VecEnv).
-#     """
-#     def _init():
-#         # fresh reward manager per worker
-#         rm = gen_reward_manager()
-
-#         # self-play handler per worker; points at checkpoint directory
-#         if opponent_mode == "latest":
-#             sp = DirSelfPlayLatest(policy_partial, ckpt_dir)
-#         else:
-#             sp = DirSelfPlayRandom(policy_partial, ckpt_dir)
-
-#         # wire opponents
-#         opponents = {
-#             'self_play': (1.0, sp),                 # you can mix others if you want
-#             # 'constant_agent': (0.2, partial(ConstantAgent)),
-#             # 'based_agent': (0.2, partial(BasedAgent)),
-#         }
-#         opp_cfg = OpponentsCfg(opponents=opponents)
-
-#         # no save handler inside workers (saving handled by callback in main proc)
-#         env = SelfPlayWarehouseBrawl(
-#             reward_manager=rm,
-#             opponent_cfg=opp_cfg,
-#             save_handler=None,
-#             resolution=resolution
-#         )
-
-#         # SB3 likes Monitor for episodic stats per worker
-#         return Monitor(env)
-#     return _init
 
 @dataclass
 class OpponentsCfg():
@@ -643,7 +625,15 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
             dt = 1.0 / getattr(self.raw_env, "fps", 30.0)
             reward = self.reward_manager.process(self.raw_env, dt)
 
-        return observations[0], reward, terminated, truncated, info
+         # ensure we return a dict for player 0 and attach breakdown
+        info0 = info[0] if isinstance(info, (list, tuple)) else info
+        if hasattr(self.reward_manager, "last_terms"):
+            info0 = dict(info0)  # copy if needed
+            info0["rew_terms"] = dict(self.reward_manager.last_terms)
+            info0["rew_signals"] = float(self.reward_manager.last_signals)
+
+
+        return observations[0], reward, terminated, truncated, info0
 
     def reset(self, seed=None, options=None):
         observations, info = self.raw_env.reset()
@@ -799,8 +789,7 @@ class ConstantAgent(Agent):
         super().__init__(*args, **kwargs)
 
     def predict(self, obs):
-        action = np.zeros_like(self.action_space.sample())
-        return action
+        return self.act_helper.zeros()
 
 class RandomAgent(Agent):
 
