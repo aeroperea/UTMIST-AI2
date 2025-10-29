@@ -708,9 +708,9 @@ if __name__ == "__main__":
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-        net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+        net_arch=[dict(pi=[512, 512, 256], vf=[512, 512, 256])],
         features_extractor_class=MLPExtractor,
-        features_extractor_kwargs=dict(features_dim=64, hidden_dim=128)
+        features_extractor_kwargs=dict(features_dim=256, hidden_dim=512)
         )
 
     # what the opponent loads when env.reset() happens
