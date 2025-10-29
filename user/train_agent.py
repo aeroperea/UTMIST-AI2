@@ -36,6 +36,8 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback,
 from environment.agent import *
 from typing import Optional, Type, List, Tuple
 
+import time
+
 # -------------------------------------------------------------------------
 # ----------------------------- AGENT CLASSES -----------------------------
 # -------------------------------------------------------------------------
@@ -671,6 +673,20 @@ def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
     zips.sort(key=_key)
     return zips[-1]
 
+class PhaseTimerCallback(BaseCallback):
+    def __init__(self, verbose=0): super().__init__(verbose); self._t=None
+    def _on_training_start(self): self.logger.record("phases/start", 1)
+    def _on_rollout_start(self):  self._t = time.time()
+    def _on_rollout_end(self):
+        dt = time.time()-self._t
+        self.logger.record("phases/rollout_sec", dt)
+        if self.verbose: print(f"[phase] rollout {dt:.2f}s")
+        self._t = time.time()
+    def _on_training_end(self):
+        # called after all epochs of the update
+        dt = time.time()-self._t if self._t else 0.0
+        self.logger.record("phases/train_sec", dt)
+        if self.verbose: print(f"[phase] train {dt:.2f}s")
 
 
 if __name__ == "__main__":
@@ -688,8 +704,8 @@ if __name__ == "__main__":
         device="cuda",
         verbose=1,
         n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=4096,    # must divide n_steps * n_envs
-        n_epochs=10,
+        batch_size=8192,    # must divide n_steps * n_envs
+        n_epochs=7,
         learning_rate=3e-4,
         gamma=0.999,
         gae_lambda=0.95,
@@ -784,10 +800,11 @@ if __name__ == "__main__":
 
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
     rb_cb  = RewardBreakdownCallback(verbose=1)
+    timing_cb = PhaseTimerCallback(verbose=1)
 
     # ---- train ----
     total_steps = 5_000_000
-    model.learn(total_timesteps=total_steps, callback=CallbackList([ckpt_cb, vec_cb, rb_cb]))
+    model.learn(total_timesteps=total_steps, callback=CallbackList([ckpt_cb, vec_cb, rb_cb, timing_cb]))
 
     # final save
     model.save(os.path.join(EXP_ROOT, "final_model"))
