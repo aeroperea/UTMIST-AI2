@@ -311,7 +311,7 @@ class MLPExtractor(BaseFeaturesExtractor):
         super().__init__(observation_space, features_dim)
         self.model = MLPPolicy(
             obs_dim=observation_space.shape[0],
-            out_dim=features_dim,
+            features_dim=features_dim,
             hidden_dim=hidden_dim,
         )
     
