@@ -727,15 +727,15 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=512,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=16,    # must divide n_steps * n_envs
-        n_epochs=7,
+        n_steps=128,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        batch_size=512,    # must divide n_steps * n_envs
+        n_epochs=5,
         learning_rate=3e-4,
         gamma=0.999,
         gae_lambda=0.95,
         ent_coef=0.0077,
         clip_range=0.2,
-        target_kl=0.07,
+        target_kl=0.1,
         clip_range_vf = 0.2,
         vf_coef = 0.5,
         max_grad_norm = 0.5,     
@@ -743,14 +743,14 @@ if __name__ == "__main__":
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-        net_arch=dict(pi=[256, 256], vf=[256, 256]),
-        lstm_hidden_size=256,                       # core recurrent capacity
-        n_lstm_layers=1,
+        net_arch=dict(pi=[512, 256], vf=[512, 256]),
+        lstm_hidden_size=512,                       # core recurrent capacity
+        n_lstm_layers=2,
         shared_lstm=False,                           # shared torso for pi/vf, cheaper and stable
         enable_critic_lstm=True,                   
         ortho_init=True,
         features_extractor_class=MLPExtractor,
-        features_extractor_kwargs=dict(features_dim=64, hidden_dim=128)
+        features_extractor_kwargs=dict(features_dim=128, hidden_dim=256)
         )
 
     # what the opponent loads when env.reset() happens
