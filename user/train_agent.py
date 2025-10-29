@@ -716,7 +716,7 @@ class PhaseTimerCallback(BaseCallback):
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_11(Recurrent)"
+    EXP_ROOT = "checkpoints/experiment_11(Recurrent shared)"
     os.makedirs(EXP_ROOT, exist_ok=True)
 
     # ---- vectorized env build ----
@@ -746,8 +746,8 @@ if __name__ == "__main__":
         net_arch=dict(pi=[512, 256], vf=[512, 256]),
         lstm_hidden_size=512,                       # core recurrent capacity
         n_lstm_layers=2,
-        shared_lstm=False,                           # shared torso for pi/vf, cheaper and stable
-        enable_critic_lstm=True,                   
+        shared_lstm=True,                           # shared torso for pi/vf, cheaper and stable
+        enable_critic_lstm=False,                   
         ortho_init=True,
         features_extractor_class=MLPExtractor,
         features_extractor_kwargs=dict(features_dim=128, hidden_dim=256)
