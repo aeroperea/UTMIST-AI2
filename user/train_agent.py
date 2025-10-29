@@ -731,7 +731,7 @@ if __name__ == "__main__":
     os.makedirs(EXP_ROOT, exist_ok=True)
 
     # ---- vectorized env build ----
-    n_envs = 50
+    n_envs = 40
 
     # ---- sb3 hyperparams ----
     # note: with vectorized training, total rollout per update = n_steps * n_envs
