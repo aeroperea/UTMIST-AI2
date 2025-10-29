@@ -703,15 +703,20 @@ if __name__ == "__main__":
 
 
     # resume model if there is a checkpoint, else start fresh
-    latest = _latest_ckpt(EXP_ROOT, "rl_model_")
-    if latest is not None:
+    load_checkpoint = True
+    if load_checkpoint:
+        latest = _latest_ckpt(EXP_ROOT, "rl_model_")
+    if load_checkpoint and latest is not None:
          # ---- PPO model ----
         model = PPO.load(latest, env=vec_env, device=sb3_kwargs["device"])
         print(f"[resume] loaded {latest}")
     else:
          # ---- PPO model ----
         model = PPO(policy="MlpPolicy", env=vec_env, policy_kwargs=policy_kwargs, **sb3_kwargs)
-        print("[resume] no checkpoint found; starting fresh")
+        if load_checkpoint:
+            print("[resume] no checkpoint found; starting fresh")
+        else:
+            print("load checkpoint was false starting fresh")
 
     # ---- saving: from main process only ----
     # save every ~100k global steps; callback's step counter increments ~1 per vec step call,
