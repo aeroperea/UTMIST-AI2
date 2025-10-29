@@ -112,17 +112,16 @@ class RecurrentPPOAgent(Agent):
         self.episode_starts = np.ones((1,), dtype=bool)
 
     def _initialize(self) -> None:
+        dev = self._sb3_kwargs.get("device", "cpu")
         if self.file_path is None:
-            # build fresh only if no checkpoint
-            self.model = RecurrentPPO(
-                "MlpLstmPolicy",
-                self.env,
-                policy_kwargs=self._policy_kwargs,
-                **self._sb3_kwargs
-            )
+            self.model = RecurrentPPO("MlpLstmPolicy", self.env,
+                                    policy_kwargs=self._policy_kwargs,
+                                    device=dev,  # ensure cpu here for opponents
+                                    **{k:v for k,v in self._sb3_kwargs.items() if k != "device"})
             del self.env
         else:
-            self.model = RecurrentPPO.load(self.file_path)
+            self.model = RecurrentPPO.load(self.file_path, device=dev)
+        self.model.set_training_mode(False)
 
     def reset(self) -> None:
         self.episode_starts = True
@@ -629,27 +628,22 @@ def make_env(i: int,
     def _init():
         # silence audio for headless workers
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        os.environ.setdefault("MKL_NUM_THREADS", "1")
+        torch.set_num_threads(1)
 
         rm = gen_reward_manager()
 
-        sp = DirSelfPlayRandom(policy_partial, ckpt_dir) if opponent_mode == "random" \
-             else DirSelfPlayLatest(policy_partial, ckpt_dir)
+        sp = DirSelfPlayRandom(policy_partial, ckpt_dir) if opponent_mode == "random" else DirSelfPlayLatest(policy_partial, ckpt_dir)
 
-        opponents = {
-            'self_play': (1.0, sp),
-            # you can mix in scripted opponents if you want, e.g.:
-            # 'based_agent': (0.2, partial(BasedAgent)),
-            # 'constant_agent': (0.1, partial(ConstantAgent)),
-        }
+        opponents = {"self_play": (1.0, sp)}
         opp_cfg = OpponentsCfg(opponents=opponents)
 
         # do NOT pass a SaveHandler into workers
         rm = gen_reward_manager()
         env = SelfPlayWarehouseBrawl(
-            reward_manager=rm,
-            opponent_cfg=opp_cfg,
-            save_handler=None,
-            resolution=resolution,
+            reward_manager=rm, opponent_cfg=opp_cfg,
+            save_handler=None, resolution=resolution,
             train_mode=True, mode=RenderMode.NONE
         )
         rm.subscribe_signals(env.raw_env)  # <-- take this from original
@@ -713,7 +707,7 @@ if __name__ == "__main__":
     # what the opponent loads when env.reset() happens
     policy_partial = partial(RecurrentPPOAgent,
                          policy_kwargs=policy_kwargs,
-                         sb3_kwargs=sb3_kwargs)
+                         sb3_kwargs={**sb3_kwargs, "device": "cpu"})  # <-- opponents on cpu
 
     vec_env = SubprocVecEnv(
         [make_env(i, EXP_ROOT, policy_partial, opponent_mode="random", resolution=CameraResolution.LOW)
