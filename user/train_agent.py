@@ -133,7 +133,7 @@ class RecurrentPPOAgent(Agent):
                 self.model.policy.eval()
 
     def reset(self) -> None:
-        self.episode_starts = True
+        self.episode_starts = np.ones((1,), dtype=bool)
 
     def predict(self, obs):
         action, self.lstm_states = self.model.predict(obs, state=self.lstm_states, episode_start=self.episode_starts, deterministic=True)

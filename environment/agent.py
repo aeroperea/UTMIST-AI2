@@ -483,16 +483,19 @@ class DirSelfPlayRandom(SelfPlayHandler):
         self.ckpt_dir = ckpt_dir
         self._cache = []
         self._last_count = -1
+        self._model_cache = {}  # simple per-worker cac
     def _refresh(self):
         files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
         if len(files) != self._last_count:
-            self._cache = files
+            self._files = files
             self._last_count = len(files)
     def get_opponent(self) -> Agent:
         self._refresh()
-        chosen = random.choice(self._cache) if self._cache else None
+        chosen = random.choice(self._files) if self._files else None
         path = os.path.join(self.ckpt_dir, chosen) if chosen else None
-        return self.get_model_from_path(path)
+        if path not in self._model_cache:
+            self._model_cache[path] = self.get_model_from_path(path)
+        return self._model_cache[path]
 
 @dataclass
 class OpponentsCfg():
