@@ -740,13 +740,13 @@ if __name__ == "__main__":
         verbose=1,
         n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
         batch_size=16384,    # must divide n_steps * n_envs
-        n_epochs=5,
-        learning_rate=3e-4,
+        n_epochs=10,
+        learning_rate=4e-4,
         gamma=0.999,
         gae_lambda=0.95,
         ent_coef=0.0077,
         clip_range=0.2,
-        target_kl=0.077,
+        target_kl=0.05,
     )
 
     policy_kwargs = dict(
