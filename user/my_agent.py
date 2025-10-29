@@ -1,77 +1,104 @@
-# # SUBMISSION: Agent
-# This will be the Agent class we run in the 1v1. We've started you off with a functioning RL agent (`SB3Agent(Agent)`) and if-statement agent (`BasedAgent(Agent)`). Feel free to copy either to `SubmittedAgent(Agent)` then begin modifying.
-# 
-# Requirements:
-# - Your submission **MUST** be of type `SubmittedAgent(Agent)`
-# - Any instantiated classes **MUST** be defined within and below this code block.
-# 
-# Remember, your agent can be either machine learning, OR if-statement based. I've seen many successful agents arising purely from if-statements - give them a shot as well, if ML is too complicated at first!!
-# 
-# Also PLEASE ask us questions in the Discord server if any of the API is confusing. We'd be more than happy to clarify and get the team on the right track.
-# Requirements:
-# - **DO NOT** import any modules beyond the following code block. They will not be parsed and may cause your submission to fail validation.
-# - Only write imports that have not been used above this code block
-# - Only write imports that are from libraries listed here
-# We're using PPO by default, but feel free to experiment with other Stable-Baselines 3 algorithms!
-
+# submission: agent (box action space + policy-only load)
 import os
 import gdown
 from typing import Optional
 from environment.agent import Agent
-from stable_baselines3 import PPO, A2C # Sample RL Algo imports
-from sb3_contrib import RecurrentPPO # Importing an LSTM
+from stable_baselines3 import PPO
+from stable_baselines3.common.save_util import load_from_zip_file
+from user.train_agent import MLPExtractor
+from torch import nn
 
-# To run the sample TTNN model, you can uncomment the 2 lines below: 
-# import ttnn
-# from user.my_agent_tt import TTMLPPolicy
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
 
+# --- tiny spec-only env (gymnasium) ---
+class _SpecEnv(gym.Env):
+    metadata = {"render_modes": []}
+    def __init__(self, obs_dim=64, act_dim=10):
+        super().__init__()
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+        # IMPORTANT: Box action space to match Gaussian policy (has log_std)
+        self.action_space = spaces.Box(low=0.0, high=1.0, shape=(act_dim,), dtype=np.float32)
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        return np.zeros(self.observation_space.shape, dtype=np.float32), {}
+
+    def step(self, action):
+        return np.zeros(self.observation_space.shape, dtype=np.float32), 0.0, False, False, {}
 
 class SubmittedAgent(Agent):
-    '''
-    Input the **file_path** to your agent here for submission!
-    '''
-    def __init__(
-        self,
-        file_path: Optional[str] = None,
-    ):
+    def __init__(self, file_path: Optional[str] = None):
         super().__init__(file_path)
 
-        # To run a TTNN model, you must maintain a pointer to the device and can be done by 
-        # uncommmenting the line below to use the device pointer
-        # self.mesh_device = ttnn.open_mesh_device(ttnn.MeshShape(1,1))
-
     def _initialize(self) -> None:
-        if self.file_path is None:
-            self.model = PPO("MlpPolicy", self.env, verbose=0)
-            del self.env
-        else:
-            self.model = PPO.load(self.file_path)
+        # mirror training arch
+        policy_kwargs = dict(
+            activation_fn=nn.SiLU,
+            net_arch=dict(pi=[512, 512, 256], vf=[512, 512, 256]),
+            features_extractor_class=MLPExtractor,
+            features_extractor_kwargs=dict(features_dim=256, hidden_dim=512),
+        )
 
-        # To run the sample TTNN model during inference, you can uncomment the 5 lines below:
-        # This assumes that your self.model.policy has the MLPPolicy architecture defined in `train_agent.py` or `my_agent_tt.py`
-        # mlp_state_dict = self.model.policy.features_extractor.model.state_dict()
-        # self.tt_model = TTMLPPolicy(mlp_state_dict, self.mesh_device)
-        # self.model.policy.features_extractor.model = self.tt_model
-        # self.model.policy.vf_features_extractor.model = self.tt_model
-        # self.model.policy.pi_features_extractor.model = self.tt_model
+        # env spec must match dims of the trained model
+        dummy = _SpecEnv(obs_dim=64, act_dim=10)
+
+        # minimal container; cpu is fine for MLP policies
+        self.model = PPO(
+            "MlpPolicy",
+            dummy,
+            policy_kwargs=policy_kwargs,
+            device="cpu",
+            verbose=0,
+            n_steps=32,
+            batch_size=32,
+            n_epochs=1,
+        )
+
+        if self.file_path is None:
+            return
+
+        # load policy-only params; replace pickled objects to avoid deserialization errors
+        _, params, _ = load_from_zip_file(
+            self.file_path,
+            device="cpu",
+            custom_objects={
+                "features_extractor_class": MLPExtractor,
+                "activation_fn": nn.SiLU,
+                "clip_range": 0.2,                    # replace schedules/callables
+                "lr_schedule": (lambda *_: 3e-4),
+                "policy_kwargs": {},                  # silence policy_kwargs pickle
+            },
+            print_system_info=False,
+        )
+        policy_state = params.get("policy")
+        if policy_state is None:
+            raise RuntimeError("checkpoint missing 'policy' state_dict")
+
+        # sanity: checkpoint expects Gaussian policy (has log_std)
+        if "log_std" not in policy_state:
+            raise RuntimeError("checkpoint does not contain 'log_std'; did you train with a different action space?")
+
+        self.model.policy.load_state_dict(policy_state, strict=True)
 
     def _gdown(self) -> str:
         data_path = "rl-model.zip"
         if not os.path.isfile(data_path):
             print(f"Downloading {data_path}...")
-            # Place a link to your PUBLIC model data here. This is where we will download it from on the tournament server.
             url = "https://drive.google.com/file/d/1JIokiBOrOClh8piclbMlpEEs6mj3H1HJ/view?usp=sharing"
             gdown.download(url, output=data_path, fuzzy=True)
         return data_path
 
     def predict(self, obs):
         action, _ = self.model.predict(obs)
+        # if your runtime env expects 0/1 keys, you can threshold:
+        # action = (action > 0.5).astype(np.float32)
         return action
 
     def save(self, file_path: str) -> None:
         self.model.save(file_path)
 
-    # If modifying the number of models (or training in general), modify this
     def learn(self, env, total_timesteps, log_interval: int = 4):
         self.model.set_env(env)
         self.model.learn(total_timesteps=total_timesteps, log_interval=log_interval)
