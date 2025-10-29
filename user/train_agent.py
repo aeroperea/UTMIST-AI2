@@ -114,14 +114,23 @@ class RecurrentPPOAgent(Agent):
     def _initialize(self) -> None:
         dev = self._sb3_kwargs.get("device", "cpu")
         if self.file_path is None:
-            self.model = RecurrentPPO("MlpLstmPolicy", self.env,
-                                    policy_kwargs=self._policy_kwargs,
-                                    device=dev,  # ensure cpu here for opponents
-                                    **{k:v for k,v in self._sb3_kwargs.items() if k != "device"})
+            self.model = RecurrentPPO(
+                "MlpLstmPolicy",
+                self.env,
+                policy_kwargs=self._policy_kwargs,
+                device=dev,
+                **{k: v for k, v in self._sb3_kwargs.items() if k != "device"}
+            )
             del self.env
         else:
             self.model = RecurrentPPO.load(self.file_path, device=dev)
-        self.model.set_training_mode(False)
+
+        # put the policy in eval mode without relying on sb3 helpers
+        if hasattr(self.model, "policy"):
+            if hasattr(self.model.policy, "set_training_mode"):
+                self.model.policy.set_training_mode(False)
+            else:
+                self.model.policy.eval()
 
     def reset(self) -> None:
         self.episode_starts = True
@@ -705,9 +714,10 @@ if __name__ == "__main__":
         )
 
     # what the opponent loads when env.reset() happens
+    opp_sb3_kwargs = {**sb3_kwargs, "device": "cpu"}
     policy_partial = partial(RecurrentPPOAgent,
                          policy_kwargs=policy_kwargs,
-                         sb3_kwargs={**sb3_kwargs, "device": "cpu"})  # <-- opponents on cpu
+                         sb3_kwargs=opp_sb3_kwargs)  # <-- opponents on cpu
 
     vec_env = SubprocVecEnv(
         [make_env(i, EXP_ROOT, policy_partial, opponent_mode="random", resolution=CameraResolution.LOW)
