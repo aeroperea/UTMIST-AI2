@@ -693,7 +693,7 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
             return xmin, xmax, ymin, ymax
 
         self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=train_mode, mode=mode)
-        probe_arena_bounds(self.raw_env)
+        # probe_arena_bounds(self.raw_env)
         self.action_space = self.raw_env.action_space
         self.act_helper = self.raw_env.act_helper
         self.observation_space = self.raw_env.observation_space
