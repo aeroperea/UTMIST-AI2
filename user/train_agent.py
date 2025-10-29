@@ -684,7 +684,7 @@ def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_10"
+    EXP_ROOT = "checkpoints/experiment_11(Recurrent)"
     os.makedirs(EXP_ROOT, exist_ok=True)
 
     # ---- vectorized env build ----
@@ -695,7 +695,7 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=512,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
         batch_size=4096,    # must divide n_steps * n_envs
         n_epochs=10,
         learning_rate=3e-4,
@@ -704,22 +704,26 @@ if __name__ == "__main__":
         ent_coef=0.0077,
         clip_range=0.2,
         target_kl=0.02,
+        clip_range_vf = 0.2,
+        vf_coef = 0.5,
+        max_grad_norm = 0.5,     
     )
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
         net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+        lstm_hidden_size=256,                       # core recurrent capacity
+        n_lstm_layers=1,
+        shared_lstm=True,                           # shared torso for pi/vf, cheaper and stable
+        enable_critic_lstm=True,                   
+        ortho_init=True,
         features_extractor_class=MLPExtractor,
         features_extractor_kwargs=dict(features_dim=64, hidden_dim=128)
         )
 
     # what the opponent loads when env.reset() happens
     policy_partial = partial(
-        CustomAgent,
-        sb3_class=PPO,
-        extractor=MLPExtractor,
-        sb3_kwargs=sb3_kwargs,       # your CustomAgent can ignore these when loading from zip
-        policy_kwargs=policy_kwargs
+        RecurrentPPOAgent
     )
 
     vec_env = SubprocVecEnv(
@@ -744,11 +748,16 @@ if __name__ == "__main__":
         latest = _latest_ckpt(EXP_ROOT, "rl_model_")
     if load_checkpoint and latest is not None:
          # ---- PPO model ----
-        model = PPO.load(latest, env=vec_env, device=sb3_kwargs["device"])
+        model = RecurrentPPO.load(latest, env=vec_env, device=sb3_kwargs["device"])
         print(f"[resume] loaded {latest}")
     else:
          # ---- PPO model ----
-        model = PPO(policy="MlpPolicy", env=vec_env, policy_kwargs=policy_kwargs, **sb3_kwargs)
+        model = RecurrentPPO(
+            policy="MlpLstmPolicy",
+            env=vec_env,
+            policy_kwargs=policy_kwargs,
+            **sb3_kwargs
+        )
         if load_checkpoint:
             print("[resume] no checkpoint found; starting fresh")
         else:

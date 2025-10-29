@@ -608,35 +608,37 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
             self.save_handler.save_agent()
 
     def step(self, action):
-        full_action = {
-            0: action,
-            1: self.opponent_agent.predict(self.opponent_obs),
-        }
+        # opponent acts on last obs
+        opp_action = self.opponent_agent.predict(self.opponent_obs)
 
-        observations, rewards, terminated, truncated, info = self.raw_env.step(full_action)
+        observations, rewards, terminated, truncated, info = self.raw_env.step({0: action, 1: opp_action})
+
+        # keep opponent in sync for the next call
+        self.opponent_obs = observations[1]
 
         if self.save_handler is not None:
             self.save_handler.process()
 
-        if self.reward_manager is None:
-            reward = rewards[0]
-        else:
-            # use the env fps if available
-            dt = 1.0 / getattr(self.raw_env, "fps", 30.0)
-            reward = self.reward_manager.process(self.raw_env, dt)
+        # prefer env.dt, fall back to fps
+        dt = getattr(self.raw_env, "dt", 1.0 / getattr(self.raw_env, "fps", 30.0))
+        reward = rewards[0] if self.reward_manager is None else self.reward_manager.process(self.raw_env, dt)
 
-         # ensure we return a dict for player 0 and attach breakdown
+        # return a single info dict for player 0 and attach reward breakdown if present
         info0 = info[0] if isinstance(info, (list, tuple)) else info
         if hasattr(self.reward_manager, "last_terms"):
-            info0 = dict(info0)  # copy if needed
+            info0 = dict(info0)
             info0["rew_terms"] = dict(self.reward_manager.last_terms)
             info0["rew_signals"] = float(self.reward_manager.last_signals)
 
+        # optional: prime recurrent opponents for next episode
+        if bool(terminated) or bool(truncated):
+            if hasattr(self.opponent_agent, "reset"):
+                self.opponent_agent.reset()
 
         return observations[0], reward, terminated, truncated, info0
 
     def reset(self, seed=None, options=None):
-        observations, info = self.raw_env.reset()
+        observations, info = self.raw_env.reset(seed=seed, options=options)
 
         if self.reward_manager is not None:
             self.reward_manager.reset()
@@ -644,13 +646,20 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         # select agent
         new_agent: Agent = self.opponent_cfg.on_env_reset()
         if new_agent is not None:
-            self.opponent_agent: Agent = new_agent
+            self.opponent_agent = new_agent
+
+        # make sure opponent has env bindings
+        if not getattr(self.opponent_agent, "initialized", False):
+            self.opponent_agent.get_env_info(self.raw_env)
+
+        # important for recurrent opponents: clear lstm/episode flags
+        # (RecurrentPPOAgent.reset() sets episode_starts=True)
+        if hasattr(self.opponent_agent, "reset"):
+            self.opponent_agent.reset()
+
         self.opponent_obs = observations[1]
 
         self.games_done += 1
-        # if self.render_every is not None and self.games_done % self.render_every == 0:
-        #     self.render_out_video()
-
         return observations[0], info
 
     def render(self):
