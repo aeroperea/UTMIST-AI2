@@ -580,8 +580,8 @@ def gen_reward_manager():
         'damage_reward': RewTerm(func=damage_interaction_reward, weight=1.0, params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.5, params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.1),
-        'penalize_attack_reward': RewTerm(func=penalize_useless_attacks_shaped, weight=-0.044, params={"distance_thresh" : 2.75, "scale" : 2.0}),
+        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.077),
+        'penalize_attack_reward': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.002),
         #'taunt_reward': RewTerm(func=in_state_reward, weight=0.2, params={'desired_state': TauntState}),
     }
