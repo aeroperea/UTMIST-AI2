@@ -17,6 +17,7 @@ import os
 os.environ["TRAIN_MODE"] = "1"
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
+import glob, re
 from functools import partial
 import torch 
 import gymnasium as gym
@@ -30,7 +31,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, EveryNTimesteps, CallbackList
 
 from environment.agent import *
 from typing import Optional, Type, List, Tuple
@@ -633,6 +634,18 @@ def make_env(i: int,
         return Monitor(env)  # episodic stats per worker
     return _init
 
+def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
+    zips = glob.glob(os.path.join(ckpt_dir, f"{prefix}*.zip"))
+    if not zips:
+        return None
+    # sort by the trailing step number; fall back to mtime if needed
+    def _key(p):
+        m = re.search(rf"{re.escape(prefix)}(\d+)\.zip$", os.path.basename(p))
+        return int(m.group(1)) if m else -1
+    zips.sort(key=_key)
+    return zips[-1]
+
+
 
 if __name__ == "__main__":
 
@@ -679,16 +692,26 @@ if __name__ == "__main__":
         start_method="spawn"  # safer with CUDA and SDL
     )
 
-    # normalize obs and reward; keep gamma consistent with PPO
-    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=sb3_kwargs["gamma"])
+    # try to resume: load vecnormalize stats if present, otherwise create fresh
+    vn_path = os.path.join(EXP_ROOT, "vecnormalize.pkl")  # we’ll save to this name below
+    if os.path.exists(vn_path):
+        vec_env = VecNormalize.load(vn_path, vec_env)
+        vec_env.training = True   # important when resuming training
+        vec_env.norm_reward = True
+    else:
+        vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=sb3_kwargs["gamma"])
 
-    # ---- PPO model ----
-    model = PPO(
-        policy="MlpPolicy",
-        env=vec_env,
-        policy_kwargs=policy_kwargs,
-        **sb3_kwargs
-    )
+
+    # resume model if there is a checkpoint, else start fresh
+    latest = _latest_ckpt(EXP_ROOT, "rl_model_")
+    if latest is not None:
+         # ---- PPO model ----
+        model = PPO.load(latest, env=vec_env, device=sb3_kwargs["device"])
+        print(f"[resume] loaded {latest}")
+    else:
+         # ---- PPO model ----
+        model = PPO(policy="MlpPolicy", env=vec_env, policy_kwargs=policy_kwargs, **sb3_kwargs)
+        print("[resume] no checkpoint found; starting fresh")
 
     # ---- saving: from main process only ----
     # save every ~100k global steps; callback's step counter increments ~1 per vec step call,
@@ -702,10 +725,21 @@ if __name__ == "__main__":
         save_vecnormalize=False,
     )
 
+    class SaveVecNormCallback(EveryNTimesteps):
+        def __init__(self, n_steps: int, path: str):
+            super().__init__(n_steps=n_steps)
+            self.path = path
+        def _on_event(self) -> None:
+            # saves running means/vars so resume is stable
+            self.model.get_vec_normalize_env().save(self.path)
+
+    vec_cb = SaveVecNormCallback(n_steps=max(1, target_save_every // n_envs), path=vn_path)
+
     # ---- train ----
     total_steps = 5_000_000
-    model.learn(total_timesteps=total_steps, callback=[ckpt_cb])
+    model.learn(total_timesteps=total_steps, callback=CallbackList([ckpt_cb, vec_cb]))
 
     # final save
     model.save(os.path.join(EXP_ROOT, "final_model"))
+    model.get_vec_normalize_env().save(vn_path)
     vec_env.close()
