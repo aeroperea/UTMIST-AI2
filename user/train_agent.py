@@ -640,6 +640,10 @@ def make_env(i: int,
     def _init():
         # silence audio for headless workers
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""   # workers see no gpu
+        torch.set_num_threads(1)
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        os.environ.setdefault("MKL_NUM_THREADS", "1")
 
         rm = gen_reward_manager()
 
@@ -684,7 +688,7 @@ def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_10"
+    EXP_ROOT = "checkpoints/experiment_nonrecurrent0"
     os.makedirs(EXP_ROOT, exist_ok=True)
 
     # ---- vectorized env build ----
@@ -714,18 +718,26 @@ if __name__ == "__main__":
         )
 
     # what the opponent loads when env.reset() happens
-    policy_partial = partial(
+    # policy_partial = partial(
+    #     CustomAgent,
+    #     sb3_class=PPO,
+    #     extractor=MLPExtractor,
+    #     sb3_kwargs=sb3_kwargs,       # your CustomAgent can ignore these when loading from zip
+    #     policy_kwargs=policy_kwargs
+    # )
+
+    policy_partial_cpu = partial(
         CustomAgent,
         sb3_class=PPO,
         extractor=MLPExtractor,
-        sb3_kwargs=sb3_kwargs,       # your CustomAgent can ignore these when loading from zip
+        sb3_kwargs=dict(device="cpu"),
         policy_kwargs=policy_kwargs
     )
 
     vec_env = SubprocVecEnv(
-        [make_env(i, EXP_ROOT, policy_partial, opponent_mode="random", resolution=CameraResolution.LOW)
+        [make_env(i, EXP_ROOT, policy_partial_cpu, opponent_mode="random", resolution=CameraResolution.LOW)
         for i in range(n_envs)],
-        start_method="spawn"  # safer with CUDA and SDL
+        start_method="spawn"
     )
 
     # try to resume: load vecnormalize stats if present, otherwise create fresh
