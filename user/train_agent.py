@@ -728,7 +728,7 @@ if __name__ == "__main__":
         device="cuda",
         verbose=1,
         n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=8192,    # must divide n_steps * n_envs
+        batch_size=32,    # must divide n_steps * n_envs
         n_epochs=7,
         learning_rate=3e-4,
         gamma=0.999,
