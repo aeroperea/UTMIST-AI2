@@ -280,7 +280,7 @@ class ClockworkAgent(Agent):
         return action
     
 class MLPPolicy(nn.Module):
-    def __init__(self, obs_dim: int = 64, out_dim: int = 64, hidden_dim: int = 64):
+    def __init__(self, obs_dim: int = 64, features_dim: int = 64, hidden_dim: int = 64):
         """
         A 3-layer MLP policy:
         obs -> Linear(hidden_dim) -> ReLU -> Linear(hidden_dim) -> ReLU -> Linear(action_dim)
@@ -292,7 +292,7 @@ class MLPPolicy(nn.Module):
         # Hidden layer
         self.fc2 = nn.Linear(hidden_dim, hidden_dim, dtype=torch.float32)
         # Output layer
-        self.fc3 = nn.Linear(hidden_dim, out_dim, dtype=torch.float32)
+        self.fc3 = nn.Linear(hidden_dim, features_dim, dtype=torch.float32)
 
     def forward(self, obs):
         """
@@ -655,6 +655,7 @@ def make_env(i: int,
         opp_cfg = OpponentsCfg(opponents=opponents)
 
         # do NOT pass a SaveHandler into workers
+        rm = gen_reward_manager()
         env = SelfPlayWarehouseBrawl(
             reward_manager=rm,
             opponent_cfg=opp_cfg,
@@ -662,7 +663,9 @@ def make_env(i: int,
             resolution=resolution,
             train_mode=True, mode=RenderMode.NONE
         )
-        return Monitor(env)  # episodic stats per worker
+        rm.subscribe_signals(env.raw_env)  # <-- take this from original
+        return Monitor(env)
+
     return _init
 
 def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
@@ -681,7 +684,7 @@ def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_9"
+    EXP_ROOT = "checkpoints/experiment_10"
     os.makedirs(EXP_ROOT, exist_ok=True)
 
     # ---- vectorized env build ----
@@ -705,8 +708,10 @@ if __name__ == "__main__":
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-        net_arch=[dict(pi=[256, 256], vf=[256, 256])]
-    )
+        net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+        features_extractor_class=MLPExtractor,
+        features_extractor_kwargs=dict(features_dim=64, hidden_dim=128)
+        )
 
     # what the opponent loads when env.reset() happens
     policy_partial = partial(
