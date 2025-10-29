@@ -727,15 +727,15 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=32,    # must divide n_steps * n_envs
+        n_steps=512,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        batch_size=16,    # must divide n_steps * n_envs
         n_epochs=7,
         learning_rate=3e-4,
         gamma=0.999,
         gae_lambda=0.95,
         ent_coef=0.0077,
         clip_range=0.2,
-        target_kl=0.02,
+        target_kl=0.07,
         clip_range_vf = 0.2,
         vf_coef = 0.5,
         max_grad_norm = 0.5,     
