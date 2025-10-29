@@ -36,6 +36,8 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback,
 from environment.agent import *
 from typing import Optional, Type, List, Tuple
 
+import time
+
 # -------------------------------------------------------------------------
 # ----------------------------- AGENT CLASSES -----------------------------
 # -------------------------------------------------------------------------
@@ -683,6 +685,43 @@ def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
     zips.sort(key=_key)
     return zips[-1]
 
+class PhaseTimerCallback(BaseCallback):
+    def __init__(self, verbose: int = 0):
+        super().__init__(verbose)
+        self._t_rollout_start = None
+        self._t_last_rollout_end = None
+
+    # required by BaseCallback (abstract)
+    def _on_step(self) -> bool:
+        # do nothing per-step; keep training going
+        return True
+
+    def _on_rollout_start(self) -> None:
+        now = time.time()
+        # if we just finished a prior rollout, the time since then is training time
+        if self._t_last_rollout_end is not None:
+            train_sec = now - self._t_last_rollout_end
+            self.logger.record("phases/train_sec", float(train_sec))
+            if self.verbose:
+                print(f"[phase] train {train_sec:.2f}s")
+        self._t_rollout_start = now
+
+    def _on_rollout_end(self) -> None:
+        now = time.time()
+        if self._t_rollout_start is not None:
+            rollout_sec = now - self._t_rollout_start
+            self.logger.record("phases/rollout_sec", float(rollout_sec))
+            if self.verbose:
+                print(f"[phase] rollout {rollout_sec:.2f}s")
+        self._t_last_rollout_end = now
+
+    def _on_training_end(self) -> None:
+        # capture the last train segment (after the final rollout)
+        if self._t_last_rollout_end is not None:
+            train_sec = time.time() - self._t_last_rollout_end
+            self.logger.record("phases/train_sec_final", float(train_sec))
+            if self.verbose:
+                print(f"[phase] train(final) {train_sec:.2f}s")
 
 
 if __name__ == "__main__":
@@ -699,15 +738,15 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=512,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=4096,    # must divide n_steps * n_envs
-        n_epochs=10,
+        n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        batch_size=16384,    # must divide n_steps * n_envs
+        n_epochs=5,
         learning_rate=3e-4,
         gamma=0.999,
         gae_lambda=0.95,
         ent_coef=0.0077,
         clip_range=0.2,
-        target_kl=0.02,
+        target_kl=0.077,
     )
 
     policy_kwargs = dict(
@@ -794,10 +833,16 @@ if __name__ == "__main__":
 
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
     rb_cb  = RewardBreakdownCallback(verbose=1)
+    timing_cb = PhaseTimerCallback(verbose=1)
 
     # ---- train ----
     total_steps = 5_000_000
-    model.learn(total_timesteps=total_steps, callback=CallbackList([ckpt_cb, vec_cb, rb_cb]))
+    model.learn(total_timesteps=total_steps, callback=CallbackList(
+                                                        [ckpt_cb, 
+                                                         vec_cb, 
+                                                         rb_cb, 
+                                                         timing_cb
+                                                         ]))
 
     # final save
     model.save(os.path.join(EXP_ROOT, "final_model"))
