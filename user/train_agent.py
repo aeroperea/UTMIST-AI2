@@ -138,6 +138,7 @@ class RecurrentPPOAgent(Agent):
             self.model = RecurrentPPO.load(self.file_path)
 
     def reset(self) -> None:
+        self.episode_starts = np.ones((1,), dtype=bool)
         self.episode_starts = True
 
     def predict(self, obs):
@@ -463,29 +464,15 @@ def danger_zone_reward(
     Returns:
         float: The computed penalty as a tensor.
     """
-    # Get player object from the environment
-    player: Player = env.objects["player"]
-
-    # Apply penalty if the player is in the danger zone
-    reward = -zone_penalty if player.body.position.y >= zone_height else 0.0
-
-    return reward * env.dt
+    y = env.objects["player"].body.position.y
+    overshoot = max(0.0, y - zone_height)
+    return -zone_penalty * overshoot * env.dt
 
 def in_state_reward(
     env: WarehouseBrawl,
     desired_state: Type[PlayerObjectState]=BackDashState,
 ) -> float:
-    """
-    Applies a penalty for every time frame player surpases a certain height threshold in the environment.
-
-    Args:
-        env (WarehouseBrawl): The game environment.
-        zone_penalty (int): The penalty applied when the player is in the danger zone.
-        zone_height (float): The height threshold defining the danger zone.
-
-    Returns:
-        float: The computed penalty as a tensor.
-    """
+   
     # Get player object from the environment
     player: Player = env.objects["player"]
 
@@ -497,39 +484,29 @@ def in_state_reward(
 def head_to_middle_reward(
     env: WarehouseBrawl,
 ) -> float:
-    """
-    Applies a penalty for every time frame player surpases a certain height threshold in the environment.
-
-    Args:
-        env (WarehouseBrawl): The game environment.
-        zone_penalty (int): The penalty applied when the player is in the danger zone.
-        zone_height (float): The height threshold defining the danger zone.
-
-    Returns:
-        float: The computed penalty as a tensor.
-    """
-    # Get player object from the environment
-    player: Player = env.objects["player"]
-
-    # Apply penalty if the player is in the danger zone
-    multiplier = -1 if player.body.position.x > 0 else 1
-    reward = multiplier * (player.body.position.x - player.prev_x)
-
-    return reward
+   
+    # reward > 0 iff you moved closer to x=0
+    p = env.objects["player"]
+    x_prev = p.prev_x
+    x_curr = p.body.position.x
+    return abs(x_prev) - abs(x_curr)
 
 def head_to_opponent(
     env: WarehouseBrawl,
 ) -> float:
 
-    # Get player object from the environment
-    player: Player = env.objects["player"]
-    opponent: Player = env.objects["opponent"]
+   # reward > 0 iff squared distance to opponent decreased
+    p = env.objects["player"]
+    o = env.objects["opponent"]
 
-    # Apply penalty if the player is in the danger zone
-    multiplier = -1 if player.body.position.x > opponent.body.position.x else 1
-    reward = multiplier * (player.body.position.x - player.prev_x)
+    x_prev = p.prev_x
+    x_curr = p.body.position.x
+    ox_prev = getattr(o, "prev_x", o.body.position.x)
+    ox_curr = o.body.position.x
 
-    return reward
+    d_prev = x_prev - ox_prev
+    d_curr = x_curr - ox_curr
+    return (d_prev * d_prev) - (d_curr * d_curr) * env.dt
 
 def holding_more_than_3_keys(
     env: WarehouseBrawl,
@@ -629,62 +606,6 @@ class RewardBreakdownCallback(BaseCallback):
         self._acc.clear()
         self._n = 0
 
-# --- env factory ---
-
-def make_env(i: int,
-             ckpt_dir: str,
-             policy_partial: partial,
-             opponent_mode: str = "random",
-             resolution: CameraResolution = CameraResolution.LOW):
-    """
-    returns a thunk that builds ONE independent env (needed by VecEnv)
-    """
-    def _init():
-        # silence audio for headless workers
-        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""   # workers see no gpu
-        torch.set_num_threads(1)
-        os.environ.setdefault("OMP_NUM_THREADS", "1")
-        os.environ.setdefault("MKL_NUM_THREADS", "1")
-
-        rm = gen_reward_manager()
-
-        sp = DirSelfPlayRandom(policy_partial, ckpt_dir) if opponent_mode == "random" \
-             else DirSelfPlayLatest(policy_partial, ckpt_dir)
-
-        opponents = {
-            'self_play': (1.0, sp),
-            # you can mix in scripted opponents if you want, e.g.:
-            # 'based_agent': (0.2, partial(BasedAgent)),
-            # 'constant_agent': (0.1, partial(ConstantAgent)),
-        }
-        opp_cfg = OpponentsCfg(opponents=opponents)
-
-        # do NOT pass a SaveHandler into workers
-        rm = gen_reward_manager()
-        env = SelfPlayWarehouseBrawl(
-            reward_manager=rm,
-            opponent_cfg=opp_cfg,
-            save_handler=None,
-            resolution=resolution,
-            train_mode=True, mode=RenderMode.NONE
-        )
-        rm.subscribe_signals(env.raw_env)  # <-- take this from original
-        return Monitor(env)
-
-    return _init
-
-def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
-    zips = glob.glob(os.path.join(ckpt_dir, f"{prefix}*.zip"))
-    if not zips:
-        return None
-    # sort by the trailing step number; fall back to mtime if needed
-    def _key(p):
-        m = re.search(rf"{re.escape(prefix)}(\d+)\.zip$", os.path.basename(p))
-        return int(m.group(1)) if m else -1
-    zips.sort(key=_key)
-    return zips[-1]
-
 class PhaseTimerCallback(BaseCallback):
     def __init__(self, verbose: int = 0):
         super().__init__(verbose)
@@ -723,6 +644,81 @@ class PhaseTimerCallback(BaseCallback):
             if self.verbose:
                 print(f"[phase] train(final) {train_sec:.2f}s")
 
+class RewardScheduleCallback(BaseCallback):
+    def __init__(self, schedule: list[tuple[int, dict[str, float], bool]], verbose: int = 0):
+        """
+        schedule: list of (step_threshold, weight_updates, zero_missing)
+        example: [(100_000, {"head_to_opponent": 0.1}, False),
+                  (400_000, {"damage_interaction_reward": 3.0}, False),
+                  (1_000_000, {"danger_zone_reward": 0.2, "head_to_opponent": 0.0}, True)]
+        """
+        super().__init__(verbose)
+        self.schedule = sorted(schedule, key=lambda x: x[0])
+        self._i = 0
+
+    def _on_step(self) -> bool:
+        t = self.num_timesteps
+        env = self.model.get_env()
+        # fire any stages we just crossed
+        while self._i < len(self.schedule) and t >= self.schedule[self._i][0]:
+            _, updates, zero_missing = self.schedule[self._i]
+            env.env_method("set_reward_weights", updates, zero_missing=zero_missing)
+            if self.verbose:
+                print(f"[reward-schedule] applied stage {self._i} at {t} steps: {updates}, zero_missing={zero_missing}")
+            self._i += 1
+        return True
+
+
+# --- env factory ---
+
+def make_env(i: int,
+             ckpt_dir: str,
+             policy_partial: partial,
+             opponent_mode: str = "random",
+             resolution: CameraResolution = CameraResolution.LOW):
+    """
+    returns a thunk that builds ONE independent env (needed by VecEnv)
+    """
+    def _init():
+        import types
+        # silence audio for headless workers
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""   # workers see no gpu
+        torch.set_num_threads(1)
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+        sp = DirSelfPlayRandom(policy_partial, ckpt_dir) if opponent_mode == "random" \
+             else DirSelfPlayLatest(policy_partial, ckpt_dir)
+
+        opponents = {
+            'self_play': (1.0, sp),
+            # you can mix in scripted opponents if you want, e.g.:
+            # 'based_agent': (0.2, partial(BasedAgent)),
+            # 'constant_agent': (0.1, partial(ConstantAgent)),
+        }
+        opp_cfg = OpponentsCfg(opponents=opponents)
+
+        # do NOT pass a SaveHandler into workers
+        rm = gen_reward_manager()
+        env = SelfPlayWarehouseBrawl(
+            reward_manager=rm,
+            opponent_cfg=opp_cfg,
+            save_handler=None,
+            resolution=resolution,
+            train_mode=True, mode=RenderMode.NONE
+        )
+        rm.subscribe_signals(env.raw_env)  # <-- take this from original
+        
+        def set_reward_weights(self, updates: dict[str, float], zero_missing: bool = False):
+            # call down into the real env (SelfPlayWarehouseBrawl -> reward_manager)
+            self.env.reward_manager.update_weights(updates, zero_missing=zero_missing)
+        
+        m = Monitor(env)
+        m.set_reward_weights = types.MethodType(set_reward_weights, m)
+        return m
+
+    return _init
 
 if __name__ == "__main__":
 
@@ -756,15 +752,6 @@ if __name__ == "__main__":
         features_extractor_kwargs=dict(features_dim=256, hidden_dim=512)
         )
 
-    # what the opponent loads when env.reset() happens
-    # policy_partial = partial(
-    #     CustomAgent,
-    #     sb3_class=PPO,
-    #     extractor=MLPExtractor,
-    #     sb3_kwargs=sb3_kwargs,       # your CustomAgent can ignore these when loading from zip
-    #     policy_kwargs=policy_kwargs
-    # )
-
     policy_partial_cpu = partial(
         CustomAgent,
         sb3_class=PPO,
@@ -789,6 +776,17 @@ if __name__ == "__main__":
         vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=sb3_kwargs["gamma"])
 
 
+    def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
+        zips = glob.glob(os.path.join(ckpt_dir, f"{prefix}*.zip"))
+        if not zips:
+            return None
+        # sort by the trailing step number; fall back to mtime if needed
+        def _key(p):
+            m = re.search(rf"{re.escape(prefix)}(\d+)\.zip$", os.path.basename(p))
+            return int(m.group(1)) if m else -1
+        zips.sort(key=_key)
+        return zips[-1]
+
     # resume model if there is a checkpoint, else start fresh
     load_checkpoint = True
     if load_checkpoint:
@@ -806,15 +804,6 @@ if __name__ == "__main__":
             print("load checkpoint was false starting fresh")
 
     # saving
-    target_save_every = 500_000
-    ckpt_cb = CheckpointCallback(
-        save_freq=max(1, target_save_every // n_envs),
-        save_path=EXP_ROOT,
-        name_prefix="rl_model",
-        save_replay_buffer=False,
-        save_vecnormalize=False,
-    )
-        
     class SaveVecNormCallback(BaseCallback):
         def __init__(self, save_freq: int, path: str, verbose: int = 0):
             super().__init__(verbose)
@@ -830,10 +819,27 @@ if __name__ == "__main__":
                     if self.verbose >= 1:
                         print(f"[vecnorm] saved {self.path} at {self.num_timesteps} steps")
             return True
+    target_save_every = 500_000
+    ckpt_cb = CheckpointCallback(
+        save_freq=max(1, target_save_every // n_envs),
+        save_path=EXP_ROOT,
+        name_prefix="rl_model",
+        save_replay_buffer=False,
+        save_vecnormalize=False,
+    )
 
+    # callbacks
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
     rb_cb  = RewardBreakdownCallback(verbose=1)
     timing_cb = PhaseTimerCallback(verbose=1)
+    # rwSched_cb = RewardScheduleCallback(
+    #             schedule=[
+    #                 (100_000, {"head_to_opponent": 0.10}, False),
+    #                 (400_000, {"damage_interaction_reward": 3.0}, False),
+    #                 (1_000_000, {"danger_zone_reward": 0.2, "head_to_opponent": 0.0}, True),  # stage switch
+    #             ],
+    #             verbose=1,
+    #         )
 
     # ---- train ----
     total_steps = 7_000_000
@@ -841,7 +847,8 @@ if __name__ == "__main__":
                                                         [ckpt_cb, 
                                                          vec_cb, 
                                                          rb_cb, 
-                                                         timing_cb
+                                                         timing_cb,
+                                                        #  rwSched_cb
                                                          ]))
 
     # final save

@@ -33,6 +33,7 @@ from torch import nn
 import gymnasium
 from gymnasium import spaces
 import pymunk
+from typing import Dict, Optional
 
 # heavy viz/io — only import when not headless; else define names as None to keep references valid
 try:
@@ -227,57 +228,145 @@ class RewTerm():
 # In[ ]:
 
 
-class RewardManager():
-    def __init__(self, reward_functions=None, signal_subscriptions=None, log_terms: bool = True) -> None:
-        self.reward_functions = reward_functions
-        self.signal_subscriptions = signal_subscriptions
+class RewardManager:
+    __slots__ = (
+        "reward_functions",
+        "signal_subscriptions",
+        "total_reward",
+        "collected_signal_rewards",
+        "log_terms",
+        "last_terms",
+        "last_signals",
+        "_active_terms",
+        "_cfg_epoch",
+        "_last_epoch",
+    )
+
+    def __init__(self, reward_functions: Optional[Dict[str, Any]] = None,
+                 signal_subscriptions: Optional[Dict[Any, Tuple[str, Any]]] = None,
+                 log_terms: bool = True) -> None:
+        self.reward_functions = reward_functions or {}
+        self.signal_subscriptions = signal_subscriptions or {}
         self.total_reward = 0.0
         self.collected_signal_rewards = 0.0
-        self.log_terms = log_terms
-        if self.log_terms:
-            self.last_terms: dict[str, float] = {}
-            self.last_signals: float = 0.0
+        self.log_terms = bool(log_terms)
+        self.last_terms: Dict[str, float] = {} if self.log_terms else {}
+        self.last_signals: float = 0.0
+        self._active_terms: List[Tuple[str, Callable[[Any], float], float]] = []
+        self._rebuild_active_terms()
 
+    def __setattr__(self, name, value):
+        # auto-rebuild if the whole reward_functions dict is replaced
+        object.__setattr__(self, name, value)
+        if name == "reward_functions":
+            # tolerate first-time __init__ population
+            if hasattr(self, "_active_terms"):
+                self._rebuild_active_terms()
+
+    # anchor: set_reward_functions
+    def set_reward_functions(self, reward_functions: dict) -> None:
+        # replace table and bump epoch
+        self.reward_functions = reward_functions or {}
+        self._cfg_epoch = getattr(self, "_cfg_epoch", 0) + 1
+        self._rebuild_active_terms()
+
+    # anchor: rebuild_active_terms
+    def _rebuild_active_terms(self) -> None:
+        # cache (name, fn(env)->float, weight_float). params are bound; weight is frozen
+        active = []
+        for name, cfg in (self.reward_functions or {}).items():
+            w = float(getattr(cfg, "weight", 0.0))
+            if not w:
+                continue
+            f = getattr(cfg, "func")
+            p = getattr(cfg, "params", None)
+            fn = partial(f, **p) if p else f
+            active.append((name, fn, w))
+        self._active_terms = tuple(active)
+        # init epoch counters if missing
+        self._cfg_epoch = getattr(self, "_cfg_epoch", 0)
+        self._last_epoch = getattr(self, "_last_epoch", -1)
+
+    # anchor: subscribe_signals_fast
     def subscribe_signals(self, env) -> None:
-        if not self.signal_subscriptions:
+        subs = self.signal_subscriptions
+        if not subs:
             return
-        for _, (name, term_cfg) in self.signal_subscriptions.items():
-            # bind once; no partial allocation inside the hot path
-            def _cb(*args, _tc=term_cfg, **kwargs):
-                v = _tc.func(*args, **_tc.params, **kwargs)
-                self.collected_signal_rewards += v * _tc.weight
+        for _, (name, cfg) in subs.items():
+            # keep params/weight live; do not snapshot weight; connect even if weight==0
+            fn = getattr(cfg, "func")
+            def _cb(*args, __fn=fn, __cfg=cfg, __self=self, **kwargs):
+                params = getattr(__cfg, "params", None)
+                w = float(getattr(__cfg, "weight", 0.0))
+                if not w:
+                    return
+                val = __fn(*args, **(params or {}), **kwargs)
+                __self.collected_signal_rewards += val * w
             getattr(env, name).connect(_cb)
 
-    def process(self, env, dt) -> float:
-        reward_buffer = 0.0
-        terms_log = {} if self.log_terms else None
-        if self.reward_functions:
-            for name, term_cfg in self.reward_functions.items():
-                if term_cfg.weight == 0.0:
-                    continue
-                value = term_cfg.func(env, **term_cfg.params) * term_cfg.weight
-                reward_buffer += value
-                if terms_log is not None:
-                    terms_log[name] = value
+    def update_weights(self, updates: dict[str, float], *, zero_missing: bool = False) -> None:
+        # live weight edits + epoch bump
+        rf = self.reward_functions or {}
+        for k, w in updates.items():
+            if k in rf:
+                rf[k].weight = float(w)
+        if zero_missing:
+            for k, cfg in rf.items():
+                if k not in updates:
+                    cfg.weight = 0.0
+        self._cfg_epoch = getattr(self, "_cfg_epoch", 0) + 1
+        self._rebuild_active_terms()
 
-        reward = reward_buffer + self.collected_signal_rewards
-        if self.log_terms:
-            self.last_terms = terms_log
-            self.last_signals = float(self.collected_signal_rewards)
+    # anchor: process_fast
+    def process(self, env, dt) -> float:
+        # ensure active terms reflect latest config
+        if getattr(self, "_cfg_epoch", 0) != getattr(self, "_last_epoch", -1):
+            self._rebuild_active_terms()
+            self._last_epoch = self._cfg_epoch
+
+        signals = self.collected_signal_rewards
+        reward = signals
+        log_terms = self.log_terms
+        active = getattr(self, "_active_terms", ())
+        terms_log: Optional[Dict[str, float]] = {} if (log_terms and active) else None
+
+        def _run(active_list):
+            r = signals
+            tlog = {} if (log_terms and active_list) else None
+            for name, fn, w in active_list:
+                v = fn(env) * w
+                r += v
+                if tlog is not None:
+                    tlog[name] = v
+            return r, tlog
+
+        try:
+            reward, terms_log = _run(active)
+        except TypeError:
+            # rare: signature changed; rebuild once and retry
+            self._rebuild_active_terms()
+            self._last_epoch = self._cfg_epoch
+            reward, terms_log = _run(self._active_terms)
+
+        if log_terms:
+            self.last_terms = terms_log or {}
+            self.last_signals = float(signals)
 
         self.collected_signal_rewards = 0.0
         self.total_reward += reward
 
-        if self.log_terms:
-            # avoid string formatting if no logger
-            if hasattr(env, "logger"):
-                log = env.logger[0]
-                log["reward"] = f"{float(reward_buffer):.3f}"
-                log["total_reward"] = f"{float(self.total_reward):.3f}"
-                env.logger[0] = log
+        if log_terms:
+            lg = getattr(env, "logger", None)
+            if lg:
+                entry = lg[0]
+                rb = reward - self.last_signals
+                entry["reward"] = f"{rb:.3f}"
+                entry["total_reward"] = f"{self.total_reward:.3f}"
+                lg[0] = entry
         return reward
 
-    def reset(self):
+    # anchor: reset
+    def reset(self) -> None:
         self.total_reward = 0.0
         self.collected_signal_rewards = 0.0
         if self.log_terms:
@@ -591,7 +680,20 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
                 if self.save_handler is not None:
                     handler.save_handler = self.save_handler
 
-        self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=True, mode=mode)
+        def probe_arena_bounds(env):  # env is WarehouseBrawl (not the wrapper)
+            # requires pymunk; uses static shapes to infer the stage box
+            import pymunk
+            bbs = [sh.bb for sh in env.space.shapes if sh.body.body_type == pymunk.Body.STATIC]
+            xmin = min(bb.left   for bb in bbs)
+            xmax = max(bb.right  for bb in bbs)
+            ymin = min(bb.bottom for bb in bbs)
+            ymax = max(bb.top    for bb in bbs)
+            print(f"arena static bounds: x[{xmin:.2f}, {xmax:.2f}] width={xmax-xmin:.2f} | "
+                f"y[{ymin:.2f}, {ymax:.2f}] height={ymax-ymin:.2f}")
+            return xmin, xmax, ymin, ymax
+
+        self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=train_mode, mode=mode)
+        probe_arena_bounds(self.raw_env)
         self.action_space = self.raw_env.action_space
         self.act_helper = self.raw_env.act_helper
         self.observation_space = self.raw_env.observation_space
