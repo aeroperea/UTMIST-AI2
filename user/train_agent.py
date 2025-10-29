@@ -741,7 +741,7 @@ if __name__ == "__main__":
                         print(f"[vecnorm] saved {self.path} at {self.num_timesteps} steps")
             return True
 
-    vec_cb = SaveVecNormCallback(n_steps=target_save_every, path=vn_path)
+    vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
 
     # ---- train ----
     total_steps = 5_000_000
