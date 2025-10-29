@@ -727,7 +727,7 @@ class PhaseTimerCallback(BaseCallback):
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_nonrecurrent0"
+    EXP_ROOT = "checkpoints/experiment_nonrecurrent1"
     os.makedirs(EXP_ROOT, exist_ok=True)
 
     # ---- vectorized env build ----
