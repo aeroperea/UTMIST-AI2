@@ -399,7 +399,7 @@ def base_height_l2(
     obj: GameObject = env.objects[obj_name]
 
     # Compute the L2 squared penalty
-    return (obj.body.position.y - target_height)**2
+    return ((obj.body.position.y - target_height)**2) * env.dt
 
 class RewardMode(Enum):
     ASYMMETRIC_OFFENSIVE = 0
@@ -523,7 +523,7 @@ def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.0, pos_only: bool
     delta = v_prev - v_curr
     if pos_only and delta < 0.0:
         return 0.0
-    return delta * env.dt
+    return delta
 
 def holding_more_than_3_keys(
     env: WarehouseBrawl,
@@ -581,7 +581,7 @@ def gen_reward_manager():
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.5, params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.077),
-        'penalize_attack_reward': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
+        'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.002),
         #'taunt_reward': RewTerm(func=in_state_reward, weight=0.2, params={'desired_state': TauntState}),
     }
