@@ -768,6 +768,35 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
 
 # In[ ]:
 
+# anchor: prevpos_wrapper
+class PrevPosWrapper:
+    """injects prev_x/prev_y onto env.objects['player'|'opponent'] before each step."""
+    def __init__(self, env, names=("player", "opponent")):
+        self._env = env
+        self._names = names
+
+    def _stamp_prev(self):
+        objs = getattr(self._env, "objects", {})
+        for n in self._names:
+            obj = objs.get(n)
+            if obj is None:
+                continue
+            # record last positions
+            setattr(obj, "prev_x", float(obj.body.position.x))
+            setattr(obj, "prev_y", float(obj.body.position.y))
+
+    def reset(self, *args, **kwargs):
+        obs, info = self._env.reset(*args, **kwargs)
+        self._stamp_prev()
+        return obs, info
+
+    def step(self, action):
+        self._stamp_prev()
+        return self._env.step(action)
+
+    def __getattr__(self, name):
+        # forward everything else transparently (fps, objects, etc.)
+        return getattr(self._env, name)
 
 from stable_baselines3.common.vec_env import DummyVecEnv
 from tqdm import tqdm
@@ -783,7 +812,7 @@ def run_match(agent_1: Agent | partial,
               train_mode=False
               ) -> MatchStats:
     # Initialize env
-
+    env = PrevPosWrapper(WarehouseBrawl(resolution=resolution, train_mode=train_mode))
     env = WarehouseBrawl(resolution=resolution, train_mode=train_mode)
     observations, infos = env.reset()
     obs_1 = observations[0]

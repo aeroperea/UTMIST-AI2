@@ -476,10 +476,27 @@ def in_state_reward(
     # Get player object from the environment
     player: Player = env.objects["player"]
 
-    # Apply penalty if the player is in the danger zone
+    
     reward = 1 if isinstance(player.state, desired_state) else 0.0
 
     return reward * env.dt
+
+def penalize_useless_attacks_shaped(
+    env: WarehouseBrawl,
+    distance_thresh: float = 2.75,
+    scale: float = 1.0,
+) -> float:
+    # penalize proportional to (distance^2 - threshold^2)+
+    p: Player = env.objects["player"]
+    o: Player = env.objects["opponent"]
+
+    dx = float(p.body.position.x) - float(o.body.position.x)
+    dy = float(p.body.position.y) - float(o.body.position.y)
+    dist2 = dx * dx + dy * dy
+    gap = dist2 - distance_thresh * distance_thresh
+    penalty = max(0.0, gap) * (-scale)  # 0 if within range, more negative as you get farther
+    return penalty * env.dt if isinstance(p.state, AttackState) else 0.0
+
 
 def head_to_middle_reward(
     env: WarehouseBrawl,
@@ -491,22 +508,22 @@ def head_to_middle_reward(
     x_curr = p.body.position.x
     return abs(x_prev) - abs(x_curr)
 
-def head_to_opponent(
-    env: WarehouseBrawl,
-) -> float:
-
-   # reward > 0 iff squared distance to opponent decreased
-    p = env.objects["player"]
-    o = env.objects["opponent"]
-
-    x_prev = p.prev_x
-    x_curr = p.body.position.x
-    ox_prev = getattr(o, "prev_x", o.body.position.x)
-    ox_curr = o.body.position.x
+def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.0, pos_only: bool = True) -> float:
+    # pays only while |x_p - x_o| > threshold; stops inside the radius
+    p = env.objects["player"]; o = env.objects["opponent"]
+    x_prev = getattr(p, "prev_x", p.body.position.x); x_curr = p.body.position.x
+    ox_prev = getattr(o, "prev_x", o.body.position.x); ox_curr = o.body.position.x
 
     d_prev = x_prev - ox_prev
     d_curr = x_curr - ox_curr
-    return (d_prev * d_prev) - (d_curr * d_curr) * env.dt
+    r2 = threshold * threshold
+
+    v_prev = max(0.0, d_prev * d_prev - r2)
+    v_curr = max(0.0, d_curr * d_curr - r2)
+    delta = v_prev - v_curr
+    if pos_only and delta < 0.0:
+        return 0.0
+    return delta * env.dt
 
 def holding_more_than_3_keys(
     env: WarehouseBrawl,
@@ -560,11 +577,12 @@ def gen_reward_manager():
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=1.0),
-        'damage_interaction_reward': RewTerm(func=damage_interaction_reward, weight=2.0),
+        'damage_reward': RewTerm(func=damage_interaction_reward, weight=1.0, params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
+        'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.5, params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.05),
-        'penalize_attack_reward': RewTerm(func=in_state_reward, weight=-0.017, params={'desired_state': AttackState}),
-        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.005),
+        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.1),
+        'penalize_attack_reward': RewTerm(func=penalize_useless_attacks_shaped, weight=-0.044, params={"distance_thresh" : 2.75, "scale" : 2.0}),
+        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.002),
         #'taunt_reward': RewTerm(func=in_state_reward, weight=0.2, params={'desired_state': TauntState}),
     }
     signal_subscriptions = {
@@ -708,6 +726,7 @@ def make_env(i: int,
             resolution=resolution,
             train_mode=True, mode=RenderMode.NONE
         )
+        env.raw_env = PrevPosWrapper(env.raw_env)
         rm.subscribe_signals(env.raw_env)  # <-- take this from original
         
         def set_reward_weights(self, updates: dict[str, float], zero_missing: bool = False):
