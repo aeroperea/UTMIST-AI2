@@ -727,7 +727,7 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=128,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        n_steps=512,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
         batch_size=512,    # must divide n_steps * n_envs
         n_epochs=5,
         learning_rate=3e-4,
