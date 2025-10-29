@@ -101,36 +101,25 @@ class SB3Agent(Agent):
         )
 
 class RecurrentPPOAgent(Agent):
-    '''
-    RecurrentPPOAgent:
-    - Defines an RL Agent that uses the Recurrent PPO (LSTM+PPO) algorithm
-    '''
-    def __init__(
-            self,
-            file_path: Optional[str] = None
-    ):
+    def __init__(self, file_path: Optional[str] = None,
+                 policy_kwargs: Optional[dict] = None,
+                 sb3_kwargs: Optional[dict] = None):
+        
         super().__init__(file_path)
+        self._policy_kwargs = policy_kwargs or {}
+        self._sb3_kwargs = sb3_kwargs or {}
         self.lstm_states = None
         self.episode_starts = np.ones((1,), dtype=bool)
 
     def _initialize(self) -> None:
         if self.file_path is None:
-            policy_kwargs = {
-                'activation_fn': nn.ReLU,
-                'lstm_hidden_size': 512,
-                'net_arch': [dict(pi=[32, 32], vf=[32, 32])],
-                'shared_lstm': True,
-                'enable_critic_lstm': False,
-                'share_features_extractor': True,
-
-            }
-            self.model = RecurrentPPO("MlpLstmPolicy",
-                                      self.env,
-                                      verbose=0,
-                                      n_steps=30*90*20,
-                                      batch_size=16,
-                                      ent_coef=0.05,
-                                      policy_kwargs=policy_kwargs)
+            # build fresh only if no checkpoint
+            self.model = RecurrentPPO(
+                "MlpLstmPolicy",
+                self.env,
+                policy_kwargs=self._policy_kwargs,
+                **self._sb3_kwargs
+            )
             del self.env
         else:
             self.model = RecurrentPPO.load(self.file_path)
@@ -711,10 +700,10 @@ if __name__ == "__main__":
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-        net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+        net_arch=dict(pi=[256, 256], vf=[256, 256]),
         lstm_hidden_size=256,                       # core recurrent capacity
         n_lstm_layers=1,
-        shared_lstm=True,                           # shared torso for pi/vf, cheaper and stable
+        shared_lstm=False,                           # shared torso for pi/vf, cheaper and stable
         enable_critic_lstm=True,                   
         ortho_init=True,
         features_extractor_class=MLPExtractor,
@@ -722,9 +711,9 @@ if __name__ == "__main__":
         )
 
     # what the opponent loads when env.reset() happens
-    policy_partial = partial(
-        RecurrentPPOAgent
-    )
+    policy_partial = partial(RecurrentPPOAgent,
+                         policy_kwargs=policy_kwargs,
+                         sb3_kwargs=sb3_kwargs)
 
     vec_env = SubprocVecEnv(
         [make_env(i, EXP_ROOT, policy_partial, opponent_mode="random", resolution=CameraResolution.LOW)
