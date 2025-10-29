@@ -637,8 +637,8 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
 
         return observations[0], reward, terminated, truncated, info0
 
-    def reset(self, seed: int | None = None, options: dict | None = None):
-        observations, info = self.raw_env.reset(seed=seed, options=options)
+    def reset(self, seed=None, options=None):
+        observations, info = self.raw_env.reset(seed=seed)
 
         if self.reward_manager is not None:
             self.reward_manager.reset()
