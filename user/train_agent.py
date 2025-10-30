@@ -695,7 +695,7 @@ def gen_reward_manager(log_terms: bool=True):
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.10,
                                            params={"y_thresh": 0.8, "pos_only": True}),
-        # 'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.088),
+        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.088),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
