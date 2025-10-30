@@ -30,7 +30,7 @@ from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMonitor
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
 #
 from environment.agent import *
@@ -765,7 +765,7 @@ def make_env(i: int,
     returns a thunk that builds ONE independent env (needed by VecEnv)
     """
     def _init():
-        import os as _os, torch as _torch
+        import os, torch
         # headless + single-thread hints
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -785,7 +785,7 @@ def make_env(i: int,
         opp_cfg = OpponentsCfg(opponents=opponents)
 
 	# do NOT pass a SaveHandler into workers
-        rm = gen_reward_manager(log_terms=False)
+        rm = gen_reward_manager(log_terms=(i == 0))
         env = SelfPlayWarehouseBrawl(
             reward_manager=rm,
             opponent_cfg=opp_cfg,
@@ -793,7 +793,7 @@ def make_env(i: int,
             resolution=resolution,
             train_mode=True,
             mode=RenderMode.NONE,
-            debug_log_terms=False
+            debug_log_terms=(i == 0)
         )
         env.raw_env = PrevPosWrapper(env.raw_env)
         rm.subscribe_signals(env.raw_env)
@@ -804,7 +804,7 @@ def make_env(i: int,
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_nonrecurrent2"
+    EXP_ROOT = "checkpoints/experiment_nonrecurrent3"
     os.makedirs(EXP_ROOT, exist_ok=True)
 
     # ---- vectorized env build ----
@@ -841,20 +841,28 @@ if __name__ == "__main__":
         policy_kwargs=policy_kwargs
     )
 
-    vec_env = SubprocVecEnv(
+    # vec_env = SubprocVecEnv(
+    #     [make_env(i, EXP_ROOT, policy_partial_cpu, opponent_mode="random", resolution=CameraResolution.LOW)
+    #     for i in range(n_envs)],
+    #     start_method="spawn"
+    # )
+    base_env = SubprocVecEnv(
         [make_env(i, EXP_ROOT, policy_partial_cpu, opponent_mode="random", resolution=CameraResolution.LOW)
         for i in range(n_envs)],
-        start_method="spawn"
+        # on linux, prefer default 'fork' unless you hit cuda/pytorch issues
+        # start_method="spawn"
     )
+
+    mon_env = VecMonitor(base_env, filename=os.path.join(EXP_ROOT, "monitor"))
 
     # try to resume: load vecnormalize stats if present, otherwise create fresh
     vn_path = os.path.join(EXP_ROOT, "vecnormalize.pkl")  # we’ll save to this name below
     if os.path.exists(vn_path):
-        vec_env = VecNormalize.load(vn_path, vec_env)
+        vec_env = VecNormalize.load(vn_path, mon_env)
         vec_env.training = True   # important when resuming training
         vec_env.norm_reward = True
     else:
-        vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=sb3_kwargs["gamma"])
+        vec_env = VecNormalize(mon_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=sb3_kwargs["gamma"])
 
 
     def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
@@ -909,7 +917,8 @@ if __name__ == "__main__":
         save_vecnormalize=False,
     )
     
-    total_steps = 7_000_000
+    # TOTAL STEPS
+    total_steps = 14_000_000
 
     # callbacks
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)

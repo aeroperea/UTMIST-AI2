@@ -349,20 +349,13 @@ class RewardManager:
             reward, terms_log = _run(self._active_terms)
 
         if log_terms:
+            # keep pure numerics; callback will call logger.record(...)
             self.last_terms = terms_log or {}
             self.last_signals = float(signals)
 
+        # reset signals and accumulate total
         self.collected_signal_rewards = 0.0
         self.total_reward += reward
-
-        if log_terms:
-            lg = getattr(env, "logger", None)
-            if lg:
-                entry = lg[0]
-                rb = reward - self.last_signals
-                entry["reward"] = f"{rb:.3f}"
-                entry["total_reward"] = f"{self.total_reward:.3f}"
-                lg[0] = entry
         return reward
 
     # anchor: reset
@@ -689,13 +682,13 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
 
     def __init__(self,
                  reward_manager: Optional["RewardManager"]=None,
-                 opponent_cfg: "OpponentsCfg"=None,
-                 save_handler: Optional["SaveHandler"]=None,
-                 render_every: int | None = None,
-                 resolution: "CameraResolution"="CameraResolution.LOW",
-                 train_mode: bool=True,
-                 mode: "RenderMode"="RenderMode.RGB_ARRAY",
-                 debug_log_terms: bool=False):
+                opponent_cfg: "OpponentsCfg"=None,
+                save_handler: Optional["SaveHandler"]=None,
+                render_every: int | None = None,
+                resolution: CameraResolution = CameraResolution.LOW,
+                train_mode: bool = True,
+                mode: RenderMode = RenderMode.RGB_ARRAY,
+                debug_log_terms: bool = False):
         # anchor: sp_env_init
         super().__init__()
         self.train_mode = train_mode
@@ -739,10 +732,13 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
             self.save_handler.agent.update_num_timesteps(self.save_handler.num_timesteps)
             self.save_handler.save_agent()
 
+    # anchor: sp_env_step_trim_info
     def step(self, action):
-        # anchor: sp_env_step_trim_info
         full_action = {0: action, 1: self.opponent_agent.predict(self.opponent_obs)}
         observations, rewards, terminated, truncated, info = self.raw_env.step(full_action)
+
+        # fix: refresh cached opponent observation
+        self.opponent_obs = observations[1]
 
         if self.save_handler is not None:
             self.save_handler.process()
@@ -831,8 +827,8 @@ def run_match(agent_1: Agent | partial,
               train_mode=False
               ) -> MatchStats:
     # Initialize env
-    env = PrevPosWrapper(WarehouseBrawl(resolution=resolution, train_mode=train_mode))
     env = WarehouseBrawl(resolution=resolution, train_mode=train_mode)
+    env = PrevPosWrapper(env)
     observations, infos = env.reset()
     obs_1 = observations[0]
     obs_2 = observations[1]
@@ -851,17 +847,16 @@ def run_match(agent_1: Agent | partial,
 
 
     writer = None
-    if video_path is None:
-        print("video_path=None -> Not rendering")
+    if video_path is None or skvideo is None:
+        print("video_path=None or skvideo unavailable -> not rendering")
     else:
-        print(f"video_path={video_path} -> Rendering")
-        # Initialize video writer
+        print(f"video_path={video_path} -> rendering")
         writer = skvideo.io.FFmpegWriter(video_path, outputdict={
-            '-vcodec': 'libx264',  # Use H.264 for Windows Media Player
-            '-pix_fmt': 'yuv420p',  # Compatible with both WMP & Colab
-            '-preset': 'fast',  # Faster encoding
-            '-crf': '20',  # Quality-based encoding (lower = better quality)
-            '-r': '30'  # Frame rate
+            '-vcodec': 'libx264',
+            '-pix_fmt': 'yuv420p',
+            '-preset': 'fast',
+            '-crf': '20',
+            '-r': '30'
         })
 
     # If partial
@@ -890,12 +885,12 @@ def run_match(agent_1: Agent | partial,
       if reward_manager is not None:
           reward_manager.process(env, 1 / env.fps)
 
-      if video_path is not None:
-            img = env.render()
-            img = np.rot90(img, k=-1)  #video output rotate fix
-            img = np.fliplr(img)  # Mirror/flip the image horizontally
-            writer.writeFrame(img) 
-            del img
+      if writer is not None:
+        img = env.render()
+        img = np.rot90(img, k=-1)
+        img = np.fliplr(img)
+        writer.writeFrame(img)
+        del img
 
       if terminated or truncated:
           break
@@ -923,7 +918,9 @@ def run_match(agent_1: Agent | partial,
         player2=player_2_stats,
         player1_result=result
     )
-
+    
+    if writer is not None:
+        writer.close()
     del env
 
     return match_stats
@@ -1178,7 +1175,8 @@ class RecurrentPPOAgent(Agent):
             self.model = RecurrentPPO.load(self.file_path)
 
     def reset(self) -> None:
-        self.episode_starts = True
+        self.lstm_states = None
+        self.episode_starts = np.ones((1,), dtype=bool)
 
     def predict(self, obs):
         action, self.lstm_states = self.model.predict(obs, state=self.lstm_states, episode_start=self.episode_starts, deterministic=True)
