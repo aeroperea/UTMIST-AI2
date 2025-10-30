@@ -75,13 +75,22 @@ def _compute_ctx(base, dt: float) -> RewCtx:
 
     dx = px - ox; dy = py - oy; dist2 = dx*dx + dy*dy
 
-    half_w = float(math.floor(getattr(base, "stage_width_tiles", 0) / 2.0))
-    half_h = float(math.floor(getattr(base, "stage_height_tiles", 0) / 2.0))
+    # prefer world extents if present; otherwise fall back to tiles
+    stage_w_world = getattr(base, "stage_width_world", None)
+    stage_h_world = getattr(base, "stage_height_world", None)
+    if isinstance(stage_w_world, (int, float)) and isinstance(stage_h_world, (int, float)):
+        half_w = 0.5 * float(stage_w_world)
+        half_h = 0.5 * float(stage_h_world)
+    else:
+        tiles_w = float(getattr(base, "stage_width_tiles", 0))
+        tiles_h = float(getattr(base, "stage_height_tiles", 0))
+        half_w = 0.5 * tiles_w
+        half_h = 0.5 * tiles_h
 
     p_state = getattr(p, "state", None)
     o_state = getattr(o, "state", None)
 
-    # attacking / grounded without importing engine symbols
+    # attacking without importing engine symbols
     p_attacking = False
     is_att_fn = getattr(p, "is_attacking", None)
     if callable(is_att_fn):
@@ -92,6 +101,7 @@ def _compute_ctx(base, dt: float) -> RewCtx:
     if not p_attacking:
         p_attacking = (getattr(p_state, "__class__", type).__name__ == "AttackState")
 
+    # grounded detection
     is_on_floor = getattr(p, "is_on_floor", None)
     if callable(is_on_floor):
         try:
@@ -101,18 +111,12 @@ def _compute_ctx(base, dt: float) -> RewCtx:
     else:
         p_grounded = bool(getattr(p, "on_floor", False) or getattr(p, "grounded", False))
 
-    # infer facing sign: prefer dedicated sign or enum; fall back to motion; keep sticky last
+    # facing: explicit -> enum/string -> motion -> sticky
     last_face = float(getattr(base, "_rw_last_face", 0.0) or 0.0)
-
-    # 1) explicit sign field if engine provides one
     fs = getattr(p, "facing_sign", None)
     p_face = _sign(float(fs)) if isinstance(fs, (int, float)) and float(fs) != 0.0 else 0.0
-
-    # 2) enum/string field
     if p_face == 0.0:
         p_face = _facing_sign_from_attr(getattr(p, "facing", None))
-
-    # 3) motion fallback
     if p_face == 0.0:
         dx_step = px - ppx
         if abs(pvx) > 0.1:
@@ -120,8 +124,7 @@ def _compute_ctx(base, dt: float) -> RewCtx:
         elif abs(dx_step) > 1e-3:
             p_face = _sign(dx_step)
         else:
-            p_face = last_face  # sticky
-
+            p_face = last_face
     if p_face != 0.0:
         try:
             setattr(base, "_rw_last_face", p_face)

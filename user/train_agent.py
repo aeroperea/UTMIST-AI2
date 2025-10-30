@@ -456,22 +456,15 @@ def damage_interaction_reward(
 def danger_zone_reward(
     env: WarehouseBrawl,
     zone_penalty: int = 1,
-    zone_height: float = 4.2
+    zone_height: float = 4.2,
+    symmetric: bool = False  # set True if you want "too high OR too low" to be penalized
 ) -> float:
-    """
-    Applies a penalty for every time frame player surpases a certain height threshold in the environment.
-
-    Args:
-        env (WarehouseBrawl): The game environment.
-        zone_penalty (int): The penalty applied when the player is in the danger zone.
-        zone_height (float): The height threshold defining the danger zone.
-
-    Returns:
-        float: The computed penalty as a tensor.
-    """
-
     ctx = ctx_or_compute(env)
-    overshoot = max(0.0, ctx.py - zone_height)
+    if symmetric:
+        overshoot = max(0.0, abs(ctx.py) - zone_height)
+    else:
+        # current behavior: only penalize when y exceeds +zone_height
+        overshoot = max(0.0, ctx.py - zone_height)
     return -zone_penalty * overshoot * ctx.dt
 
 def _nearest_platform_surface(env, px: float, py: float, x_pad: float):
@@ -578,40 +571,44 @@ def attack_quality_reward(
     distance_thresh: float = 2.5,
     near_bonus_scale: float = 0.6,
     far_penalty_scale: float = 1.2,
-    misalign_scale: float = 0.5,   # new: punish wrong-way swings
-    away_scale: float = 0.35,      # new: punish moving away while attacking
-    v_cap: float = 6.0,            # new: velocity cap for away penalty
-    edge_pad: float = 1.5          # new: boost penalty near edge
+    misalign_scale: float = 0.5,
+    away_scale: float = 0.35,
+    v_cap: float = 6.0,
+    edge_pad: float = 1.5
 ) -> float:
     ctx = ctx_or_compute(env)
     if not ctx.p_attacking:
         return 0.0
 
     r2 = distance_thresh * distance_thresh
-    if ctx.dist2 <= r2:
-        gain = (r2 - ctx.dist2) * near_bonus_scale
-    else:
-        gain = (ctx.dist2 - r2) * (-far_penalty_scale)
 
     # facing alignment gate
-    sdx = _sign(ctx.dx)                   # player at right of opp -> sdx>0 means opp is left
+    # tie-break: if overlapping on x now, use previous relative x
+    dx_now = ctx.dx
+    sdx = _sign(dx_now) if abs(dx_now) > 1e-5 else _sign(ctx.ppx - ctx.opx)
     desired = -sdx if sdx != 0.0 else ctx.p_face
-    align = 0.5 * (1.0 + desired * ctx.p_face)   # 0..1, 1 = facing toward
-    gain *= (0.25 + 0.75 * align)                # keep some gradient when misaligned
+    align = 0.5 * (1.0 + desired * ctx.p_face)  # 0..1
+
+    # distance terms: gate only the near bonus by alignment (keep far penalty intact)
+    if ctx.dist2 <= r2:
+        gain = (r2 - ctx.dist2) * near_bonus_scale * (0.25 + 0.75 * align)
+    else:
+        gain = -(ctx.dist2 - r2) * far_penalty_scale
 
     # away-motion penalty (only when moving away)
     away = 1.0 if (sdx * ctx.pvx) > 0.0 else 0.0
     speed = min(1.0, abs(ctx.pvx) / max(1e-6, v_cap))
     away_term = away_scale * away * speed
 
-    # near-edge penalty when attacking
+    # near-edge penalty when attacking (assumes stage centered at x=0)
     edge = max(0.0, (abs(ctx.px) - (ctx.half_w - edge_pad)) / max(1e-6, edge_pad))
-    edge_term = 0.5 * edge  # bounded 0..0.5
+    edge_term = 0.5 * edge
 
-    # misalignment penalty
+    # misalignment penalty (explicit)
     mis_term = misalign_scale * (1.0 - align)
 
     return (gain - (mis_term + away_term + edge_term)) * ctx.dt
+
 
 def attack_misalignment_penalty(
     env: WarehouseBrawl,
@@ -661,21 +658,14 @@ def head_to_middle_reward(
     x_curr = p.body.position.x
     return abs(x_prev) - abs(x_curr)
 
-def platform_aware_approach(
-    env: WarehouseBrawl,
-    y_thresh: float = 0.8,
-    pos_only: bool = True,
-) -> float:
+def platform_aware_approach(env: WarehouseBrawl, y_thresh: float = 0.8, pos_only: bool = True) -> float:
     ctx = ctx_or_compute(env)
     dx0 = abs(ctx.ppx - ctx.opx); dy0 = abs(ctx.ppy - ctx.opy)
     dx1 = abs(ctx.px  - ctx.ox ); dy1 = abs(ctx.py  - ctx.oy )
-    if dy0 > y_thresh or dy1 > y_thresh:
-        delta = (dy0 - dy1)
-    else:
-        delta = (dx0 - dx1)
+    delta = (dy0 - dy1) if (dy0 > y_thresh or dy1 > y_thresh) else (dx0 - dx1)
     if pos_only and delta < 0.0:
         return 0.0
-    return delta
+    return delta * ctx.dt
 
 def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.0, pos_only: bool = False) -> float:
     ctx = ctx_or_compute(env)
@@ -687,7 +677,7 @@ def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.0, pos_only: bool
     delta = v_prev - v_curr
     if pos_only and delta < 0.0:
         return 0.0
-    return delta
+    return delta * ctx.dt
 
 def holding_more_than_3_keys(
     env: WarehouseBrawl,
@@ -746,7 +736,7 @@ def gen_reward_manager(log_terms: bool=True):
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.88,
                                            params={"y_thresh": 0.8, "pos_only": True}),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=4.0),
+        'head_to_opponent': RewTerm(func=head_to_opponent, weight=5.0),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
@@ -756,7 +746,7 @@ def gen_reward_manager(log_terms: bool=True):
         # 'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
-        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-3.0),
+        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-7.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-0.4, params={'desired_state': TauntState}),
     }
     signal_subscriptions = {
@@ -1008,7 +998,7 @@ def _parse_args():
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_nonrecurrent5"
+    EXP_ROOT = "checkpoints/experiment_nonrecurrent6"
     os.makedirs(EXP_ROOT, exist_ok=True)
     
     args = _parse_args()
@@ -1030,7 +1020,7 @@ if __name__ == "__main__":
         verbose=1,
         n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
         batch_size=16384,    # must divide n_steps * n_envs
-        n_epochs=12,
+        n_epochs=10,
         learning_rate=3e-4,
         gamma=0.997,
         gae_lambda=0.96,
@@ -1041,9 +1031,9 @@ if __name__ == "__main__":
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-        net_arch=[dict(pi=[512, 256, 128], vf=[512, 256, 128])],
+        net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128])],
         features_extractor_class=MLPExtractor,
-        features_extractor_kwargs=dict(features_dim=256, hidden_dim=512)
+        features_extractor_kwargs=dict(features_dim=256, hidden_dim=128)
         )
 
     policy_partial_cpu = partial(
