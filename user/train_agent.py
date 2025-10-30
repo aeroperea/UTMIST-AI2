@@ -739,7 +739,7 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.30),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=18,
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=20,
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.77,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
@@ -760,8 +760,8 @@ def gen_reward_manager(log_terms: bool=True):
         'taunt_reward': RewTerm(func=in_state_reward, weight=-0.4, params={'desired_state': TauntState}),
     }
     signal_subscriptions = {
-        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
-        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=30)),
+        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=20)),
+        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=20)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
         'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=11)),
         'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=13))
