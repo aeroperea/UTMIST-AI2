@@ -37,6 +37,7 @@ from environment.agent import *
 from typing import Optional, Type, List, Tuple
 
 import time
+import argparse
 
 # -------------------------------------------------------------------------
 # ----------------------------- AGENT CLASSES -----------------------------
@@ -801,14 +802,25 @@ def make_env(i: int,
 
     return _init
 
+def _parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--numworkers", "-nw", type=int, default=None,
+                   help="how many env workers (omit to use the script default)")
+    return p.parse_args()
+
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
     EXP_ROOT = "checkpoints/experiment_nonrecurrent3"
     os.makedirs(EXP_ROOT, exist_ok=True)
+    
+    args = _parse_args()
 
-    # ---- vectorized env build ----
-    n_envs = 40
+    # single source of truth for the built-in default
+    DEFAULT_NUM_WORKERS = 40
+
+    # use cli override if provided; else keep the script's default
+    n_envs = args.numworkers if args.numworkers is not None else DEFAULT_NUM_WORKERS
 
     # ---- sb3 hyperparams ----
     # note: with vectorized training, total rollout per update = n_steps * n_envs
