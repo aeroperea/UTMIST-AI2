@@ -738,8 +738,8 @@ Add your dictionary of RewardFunctions here using RewTerms
 def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
-        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.30),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=20,
+        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.7),
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=25,
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.77,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
@@ -750,13 +750,13 @@ def gen_reward_manager(log_terms: bool=True):
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
-            weight=2.5,
+            weight=3.0,
             params=dict(distance_thresh=1.75, near_bonus_scale=0.9, far_penalty_scale=1.25),
         ),
-        'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
+        # 'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
-        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.2),
+        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-3.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-0.4, params={'desired_state': TauntState}),
     }
     signal_subscriptions = {
@@ -1031,7 +1031,7 @@ if __name__ == "__main__":
         n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
         batch_size=16384,    # must divide n_steps * n_envs
         n_epochs=12,
-        learning_rate=4e-4,
+        learning_rate=3e-4,
         gamma=0.997,
         gae_lambda=0.96,
         ent_coef=0.02,
