@@ -1131,7 +1131,7 @@ if __name__ == "__main__":
     )
     
     # TOTAL STEPS
-    total_steps = 32_000_000
+    total_steps = 64_000_000
 
     # callbacks
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
@@ -1144,7 +1144,7 @@ if __name__ == "__main__":
         total_timesteps=total_steps,
         initial_lr=sb3_kwargs["learning_rate"],
         final_lr=3e-5,
-        warmup_frac=0.02,
+        warmup_frac=0.01,
         schedule="cosine",
         # if you prefer step decay instead:
         # schedule="step", step_milestones=[1_500_000, 3_000_000, 5_000_000], step_factor=0.5,
