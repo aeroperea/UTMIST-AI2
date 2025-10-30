@@ -690,7 +690,7 @@ def holding_more_than_3_keys(
     a = player.cur_action
     if (a > 0.5).sum() > 3:
         return env.dt
-    return 0
+    return -env.dt
 
 def on_win_reward(env: WarehouseBrawl, agent: str) -> float:
     if agent == 'player':
@@ -736,7 +736,8 @@ def gen_reward_manager(log_terms: bool=True):
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.88,
                                            params={"y_thresh": 0.8, "pos_only": True}),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=10.0),
+        'move_dir_reward': RewTerm(func=head_to_opponent, weight=5.0),
+        'move_towards_reward': RewTerm(func=head_to_opponent, weight=10.0),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
@@ -1018,9 +1019,9 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size= 8192,    # must divide n_steps * n_envs
-        n_epochs=5,
+        n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        batch_size=16384,    # must divide n_steps * n_envs
+        n_epochs=6,
         learning_rate=3e-4,
         gamma=0.997,
         gae_lambda=0.96,
@@ -1033,7 +1034,7 @@ if __name__ == "__main__":
         activation_fn=nn.SiLU,
         net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128])],
         features_extractor_class=MLPExtractor,
-        features_extractor_kwargs=dict(features_dim=256, hidden_dim=128)
+        features_extractor_kwargs=dict(features_dim=256, hidden_dim=512)
         )
 
     policy_partial_cpu = partial(

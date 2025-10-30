@@ -36,9 +36,9 @@ class SubmittedAgent(Agent):
         # mirror training arch
         policy_kwargs = dict(
             activation_fn=nn.SiLU,
-            net_arch=dict(pi=[512, 256, 128], vf=[512, 256, 128]),
+            net_arch=dict(pi=[256, 256, 128], vf=[256, 256, 128]),
             features_extractor_class=MLPExtractor,
-            features_extractor_kwargs=dict(features_dim=256, hidden_dim=512),
+            features_extractor_kwargs=dict(features_dim=256, hidden_dim=128),
         )
 
         # env spec must match dims of the trained model
