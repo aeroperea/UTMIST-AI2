@@ -467,7 +467,7 @@ def danger_zone_reward(
         float: The computed penalty as a tensor.
     """
 
-    ctx = ctx_or_compute(env)(env)
+    ctx = ctx_or_compute(env)
     overshoot = max(0.0, ctx.py - zone_height)
     return -zone_penalty * overshoot * ctx.dt
 
