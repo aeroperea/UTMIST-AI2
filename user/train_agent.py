@@ -688,9 +688,9 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.30),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=3.0,
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=6.7,
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
-        'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.30,
+        'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.50,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.10,
