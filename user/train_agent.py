@@ -1031,7 +1031,7 @@ if __name__ == "__main__":
         n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
         batch_size=16384,    # must divide n_steps * n_envs
         n_epochs=12,
-        learning_rate=3e-4,
+        learning_rate=4e-4,
         gamma=0.997,
         gae_lambda=0.96,
         ent_coef=0.02,
