@@ -1008,7 +1008,7 @@ def _parse_args():
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_nonrecurrent4"
+    EXP_ROOT = "checkpoints/experiment_nonrecurrent5"
     os.makedirs(EXP_ROOT, exist_ok=True)
     
     args = _parse_args()
@@ -1036,7 +1036,7 @@ if __name__ == "__main__":
         gae_lambda=0.96,
         ent_coef=0.02,
         clip_range=clip_sched,
-        target_kl=0.099,
+        target_kl=0.1,
     )
 
     policy_kwargs = dict(

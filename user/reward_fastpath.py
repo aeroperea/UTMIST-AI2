@@ -1,4 +1,3 @@
-# reward_fastpath.py
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -7,6 +6,24 @@ import math
 
 def _sign(x: float) -> float:
     return -1.0 if x < 0.0 else (1.0 if x > 0.0 else 0.0)
+
+# robust mapper: enum/int/str -> {-1,0,+1}
+def _facing_sign_from_attr(v: Any) -> float:
+    # numeric value (preferred if present)
+    val = getattr(v, "value", None)
+    if isinstance(val, (int, float)) and val != 0:
+        return _sign(float(val))
+    # enum name or direct string
+    name = getattr(v, "name", None)
+    s = (name if isinstance(name, str) else (str(v) if v is not None else "")).upper()
+    if "LEFT" in s:
+        return -1.0
+    if "RIGHT" in s:
+        return 1.0
+    # raw numeric attr
+    if isinstance(v, (int, float)) and v != 0:
+        return _sign(float(v))
+    return 0.0
 
 # anchor: rew_ctx_def
 @dataclass(slots=True, frozen=True)
@@ -36,9 +53,7 @@ def _unwrap_env(env):
             return inner
     return env
 
-
 def clear_cached_ctx(env) -> None:
-    # clears any cached RewCtx on the base sim object
     base = _unwrap_env(env)
     try:
         delattr(base, "_rew_ctx")
@@ -66,28 +81,52 @@ def _compute_ctx(base, dt: float) -> RewCtx:
     p_state = getattr(p, "state", None)
     o_state = getattr(o, "state", None)
 
-    # avoid imports to prevent cycles
-    p_attacking = (getattr(p_state, "__class__", type).__name__ == "AttackState")
-    p_grounded = bool(getattr(p, "is_on_floor", lambda: False)())
+    # attacking / grounded without importing engine symbols
+    p_attacking = False
+    is_att_fn = getattr(p, "is_attacking", None)
+    if callable(is_att_fn):
+        try:
+            p_attacking = bool(is_att_fn())
+        except Exception:
+            p_attacking = False
+    if not p_attacking:
+        p_attacking = (getattr(p_state, "__class__", type).__name__ == "AttackState")
 
-    # infer facing sign robustly
-    pf_attr = getattr(p, "facing", None)
-    p_face = 0.0
-    if isinstance(pf_attr, (int, float)) and pf_attr != 0:
-        p_face = -1.0 if pf_attr < 0 else 1.0
+    is_on_floor = getattr(p, "is_on_floor", None)
+    if callable(is_on_floor):
+        try:
+            p_grounded = bool(is_on_floor())
+        except Exception:
+            p_grounded = False
     else:
-        s = str(pf_attr) if pf_attr is not None else ""
-        if "LEFT" in s:  p_face = -1.0
-        elif "RIGHT" in s: p_face =  1.0
+        p_grounded = bool(getattr(p, "on_floor", False) or getattr(p, "grounded", False))
+
+    # infer facing sign: prefer dedicated sign or enum; fall back to motion; keep sticky last
+    last_face = float(getattr(base, "_rw_last_face", 0.0) or 0.0)
+
+    # 1) explicit sign field if engine provides one
+    fs = getattr(p, "facing_sign", None)
+    p_face = _sign(float(fs)) if isinstance(fs, (int, float)) and float(fs) != 0.0 else 0.0
+
+    # 2) enum/string field
+    if p_face == 0.0:
+        p_face = _facing_sign_from_attr(getattr(p, "facing", None))
+
+    # 3) motion fallback
+    if p_face == 0.0:
+        dx_step = px - ppx
+        if abs(pvx) > 0.1:
+            p_face = _sign(pvx)
+        elif abs(dx_step) > 1e-3:
+            p_face = _sign(dx_step)
         else:
-            # fallback on recent motion
-            dx_step = px - ppx
-            if abs(pvx) > 0.1:
-                p_face = _sign(pvx)
-            elif abs(dx_step) > 1e-3:
-                p_face = _sign(dx_step)
-            else:
-                p_face = 0.0
+            p_face = last_face  # sticky
+
+    if p_face != 0.0:
+        try:
+            setattr(base, "_rw_last_face", p_face)
+        except Exception:
+            pass
 
     return RewCtx(
         dt=float(dt),
@@ -116,4 +155,4 @@ def ctx_or_compute(env, dt: Optional[float] = None) -> RewCtx:
         return ctx
     return get_ctx(base, dt)
 
-__all__ = ["RewCtx", "get_ctx", "ctx_or_compute"]
+__all__ = ["RewCtx", "get_ctx", "ctx_or_compute", "clear_cached_ctx"]
