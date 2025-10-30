@@ -688,18 +688,18 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.30),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=14,
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=17,
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
-        'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.50,
+        'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.77,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.2,
+        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.5,
                                            params={"y_thresh": 0.8, "pos_only": True}),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=1.0),
+        'head_to_opponent': RewTerm(func=head_to_opponent, weight=3.0),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
-            weight=0.88,
+            weight=0.67,
             params=dict(distance_thresh=1, near_bonus_scale=0.9, far_penalty_scale=1.25),
         ),
         # gentle edge avoidance (dt inside: small)
