@@ -1079,7 +1079,7 @@ if __name__ == "__main__":
     )
     
     # TOTAL STEPS
-    total_steps = 14_000_000
+    total_steps = 32_000_000
 
     # callbacks
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
