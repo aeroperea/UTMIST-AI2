@@ -34,6 +34,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMon
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
 #
 from environment.agent import *
+from user.reward_fastpath import ctx_or_compute(env)
 from typing import Optional, Type, List, Tuple
 
 import time
@@ -376,6 +377,9 @@ class CustomAgent(Agent):
         self.model.verbose = verbose
         self.model.learn(total_timesteps=total_timesteps, log_interval=log_interval)
 
+
+# In[ ]:
+
 # --------------------------------------------------------------------------------
 # ----------------------------- REWARD FUNCTIONS API -----------------------------
 # --------------------------------------------------------------------------------
@@ -446,9 +450,6 @@ def damage_interaction_reward(
     return reward / 140
 
 
-# In[ ]:
-
-
 def danger_zone_reward(
     env: WarehouseBrawl,
     zone_penalty: int = 1,
@@ -465,9 +466,96 @@ def danger_zone_reward(
     Returns:
         float: The computed penalty as a tensor.
     """
-    y = env.objects["player"].body.position.y
-    overshoot = max(0.0, y - zone_height)
-    return -zone_penalty * overshoot * env.dt
+
+    ctx = ctx_or_compute(env)(env)
+    overshoot = max(0.0, ctx.py - zone_height)
+    return -zone_penalty * overshoot * ctx.dt
+
+def _nearest_platform_surface(env, px: float, py: float, x_pad: float):
+    """find the closest platform surface below the player within horizontal gate"""
+    best = None  # (surface_y, left, right, vx, vy)
+    for obj in getattr(env, "objects", {}).values():
+        if not hasattr(obj, "shape"): 
+            continue
+        # only consider moving/one-way platforms (Stage). ground is handled by collision anyway.
+        if obj.__class__.__name__ != "Stage":
+            continue
+        bb = obj.shape.cache_bb()
+        # horizontal gate with small padding so we encourage being roughly above center
+        if px < (bb.left - x_pad) or px > (bb.right + x_pad):
+            continue
+        # choose the closest surface below the player in the engine's y+ = down convention
+        candidates = [bb.top, bb.bottom]
+        below = [y for y in candidates if y > py]
+        if not below:
+            continue
+        surface_y = min(below)
+        dist_y = surface_y - py  # >= 0 means below us
+        # platform velocity (kinematic body)
+        pvx = getattr(obj.body, "velocity", (0.0, 0.0))[0]
+        pvy = getattr(obj.body, "velocity", (0.0, 0.0))[1]
+        if (best is None) or (dist_y < best[0] - py):
+            best = (surface_y, bb.left, bb.right, pvx, pvy)
+    return best  # or None
+
+def platform_soft_approach(env,
+                           x_pad: float = 0.4,
+                           y_window: float = 2.5,
+                           vy_cap: float = 6.0,
+                           reward_scale: float = 0.02) -> float:
+    """
+    reward clean approaches to a platform: horizontally aligned, descending toward the surface,
+    stronger when time-to-contact is small but not zero. no penalties for air whiffs.
+    """
+    p = env.objects["player"]
+    px, py = float(p.body.position.x), float(p.body.position.y)
+    vx, vy = float(p.body.velocity.x), float(p.body.velocity.y)
+
+    # already grounded or riding a platform? no shaping needed
+    if getattr(p, "on_platform", None) is not None or p.is_on_floor():
+        return 0.0
+
+    surf = _nearest_platform_surface(env, px, py, x_pad)
+    if surf is None:
+        return 0.0
+
+    surface_y, left, right, pvx, pvy = surf
+
+    # relative vertical velocity (y+ is down in your codebase)
+    vrel_y = max(0.0, vy - float(pvy))  # only reward if descending relative to platform
+    dy = surface_y - py                  # > 0 only if surface is below the player
+
+    if dy <= 0.0 or vrel_y <= 1e-5:
+        return 0.0
+
+    # distance and speed weights (smooth, bounded)
+    w_dist = max(0.0, 1.0 - (dy / y_window))          # near surface -> stronger
+    w_speed = min(1.0, vrel_y / vy_cap)               # reasonable fall speed cap
+    # softly prefer being near platform center
+    cx = 0.5 * (left + right)
+    halfw = max(1e-3, 0.5 * (right - left))
+    w_center = max(0.0, 1.0 - abs(px - cx) / halfw)
+
+    r = reward_scale * w_dist * w_speed * (0.5 + 0.5 * w_center)
+    return r * env.dt
+
+def get_ko_bounds(env) -> Tuple[float, float]:
+    """exactly match the KO check in PlayerObjectState.physics_process (uses // 2)"""
+    half_w = math.floor(env.stage_width_tiles / 2.0)
+    half_h = math.floor(env.stage_height_tiles / 2.0)
+    return float(half_w), float(half_h)
+
+def edge_safety(env,
+                margin_x: float = 2.0,
+                margin_y: float = 1.5,
+                max_penalty: float = 0.02) -> float:
+    ctx = ctx_or_compute(env)
+    dx = ctx.half_w - abs(ctx.px)
+    dy = ctx.half_h - abs(ctx.py)
+    px = max(0.0, (margin_x - dx) / max(1e-6, margin_x))
+    py = max(0.0, (margin_y - dy) / max(1e-6, margin_y))
+    penalty = (px * px + py * py)
+    return -max_penalty * penalty * ctx.dt
 
 def in_state_reward(
     env: WarehouseBrawl,
@@ -482,21 +570,34 @@ def in_state_reward(
 
     return reward * env.dt
 
+def attack_quality_reward(
+    env: WarehouseBrawl,
+    distance_thresh: float = 2.5,
+    near_bonus_scale: float = 0.6,
+    far_penalty_scale: float = 1.2,
+) -> float:
+    ctx = ctx_or_compute(env)
+    # not attacking -> zero
+    if not ctx.p_attacking:
+        return 0.0
+    r2 = distance_thresh * distance_thresh
+    if ctx.dist2 <= r2:
+        gain = (r2 - ctx.dist2) * near_bonus_scale
+        return gain * ctx.dt
+    penalty = (ctx.dist2 - r2) * (-far_penalty_scale)
+    return penalty * ctx.dt
+
 def penalize_useless_attacks_shaped(
     env: WarehouseBrawl,
     distance_thresh: float = 2.75,
     scale: float = 1.0,
 ) -> float:
-    # penalize proportional to (distance^2 - threshold^2)+
-    p: Player = env.objects["player"]
-    o: Player = env.objects["opponent"]
-
-    dx = float(p.body.position.x) - float(o.body.position.x)
-    dy = float(p.body.position.y) - float(o.body.position.y)
-    dist2 = dx * dx + dy * dy
-    gap = dist2 - distance_thresh * distance_thresh
-    penalty = max(0.0, gap) * (-scale)  # 0 if within range, more negative as you get farther
-    return penalty * env.dt if isinstance(p.state, AttackState) else 0.0
+    ctx = ctx_or_compute(env)
+    if not ctx.p_attacking:
+        return 0.0
+    gap = ctx.dist2 - distance_thresh * distance_thresh
+    penalty = max(0.0, gap) * (-scale)
+    return penalty * ctx.dt
 
 
 def head_to_middle_reward(
@@ -509,16 +610,27 @@ def head_to_middle_reward(
     x_curr = p.body.position.x
     return abs(x_prev) - abs(x_curr)
 
+def platform_aware_approach(
+    env: WarehouseBrawl,
+    y_thresh: float = 0.8,
+    pos_only: bool = True,
+) -> float:
+    ctx = ctx_or_compute(env)
+    dx0 = abs(ctx.ppx - ctx.opx); dy0 = abs(ctx.ppy - ctx.opy)
+    dx1 = abs(ctx.px  - ctx.ox ); dy1 = abs(ctx.py  - ctx.oy )
+    if dy0 > y_thresh or dy1 > y_thresh:
+        delta = (dy0 - dy1)
+    else:
+        delta = (dx0 - dx1)
+    if pos_only and delta < 0.0:
+        return 0.0
+    return delta
+
 def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.0, pos_only: bool = True) -> float:
-    # pays only while |x_p - x_o| > threshold; stops inside the radius
-    p = env.objects["player"]; o = env.objects["opponent"]
-    x_prev = getattr(p, "prev_x", p.body.position.x); x_curr = p.body.position.x
-    ox_prev = getattr(o, "prev_x", o.body.position.x); ox_curr = o.body.position.x
-
-    d_prev = x_prev - ox_prev
-    d_curr = x_curr - ox_curr
+    ctx = ctx_or_compute(env)
+    d_prev = (ctx.ppx - ctx.opx)
+    d_curr = (ctx.px  - ctx.ox)
     r2 = threshold * threshold
-
     v_prev = max(0.0, d_prev * d_prev - r2)
     v_curr = max(0.0, d_curr * d_curr - r2)
     delta = v_prev - v_curr
@@ -566,10 +678,8 @@ def on_drop_reward(env: WarehouseBrawl, agent: str) -> float:
     return 0.0
 
 def on_combo_reward(env: WarehouseBrawl, agent: str) -> float:
-    if agent == 'player':
-        return -1.0
-    else:
-        return 1.0
+    # reward combos for the player; penalize if opponent combos
+    return 1.0 if agent == 'player' else -1.0
 
 '''
 Add your dictionary of RewardFunctions here using RewTerms
@@ -577,21 +687,32 @@ Add your dictionary of RewardFunctions here using RewTerms
 def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
-        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.5),
-        'damage_reward': RewTerm(func=damage_interaction_reward, weight=2.0, params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
-        'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.5, params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
+        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.30),
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=3.0,
+                                  params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
+        'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.30,
+                                  params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.088),
-        'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
+        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.10,
+                                           params={"y_thresh": 0.8, "pos_only": True}),
+        # 'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.088),
+        # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
+        'attack_quality': RewTerm(
+            func=attack_quality_reward,
+            weight=0.22,
+            params=dict(distance_thresh=1, near_bonus_scale=0.9, far_penalty_scale=1.25),
+        ),
+        # gentle edge avoidance (dt inside: small)
+        'edge_safety':             RewTerm(func=edge_safety, weight=0.02),
         'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.002),
-        #'taunt_reward': RewTerm(func=in_state_reward, weight=0.2, params={'desired_state': TauntState}),
+        'taunt_reward': RewTerm(func=in_state_reward, weight=-0.33, params={'desired_state': TauntState}),
     }
     signal_subscriptions = {
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
         'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=8)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=5)),
-        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=10)),
-        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=15))
+        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=15)),
+        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=5))
     }
     return RewardManager(reward_functions, signal_subscriptions, log_terms=log_terms)
 
@@ -685,6 +806,30 @@ class RewardScheduleCallback(BaseCallback):
             if self.verbose:
                 print(f"[reward-schedule] applied stage {self._i} at {t} steps: {updates}, zero_missing={zero_missing}")
             self._i += 1
+        return True
+    
+class EntropyScheduleCallback(BaseCallback):
+    """
+    decays PPO.ent_coef from `start` -> `end` with optional warmup.
+    """
+    def __init__(self, total_timesteps: int, start: float = 0.02, end: float = 0.005, warmup_frac: float = 0.02, verbose: int = 0):
+        super().__init__(verbose)
+        self.T = int(total_timesteps)
+        self.s = float(start); self.e = float(end); self.w = float(warmup_frac)
+
+    def _on_training_start(self) -> None:
+        self.model.ent_coef = self.s
+
+    def _on_step(self) -> bool:
+        t = int(self.num_timesteps)
+        p = min(1.0, max(0.0, t / self.T))        # 0->1 over training
+        if p < self.w:                             # linear warmup to start
+            val = self.s * (p / max(1e-9, self.w))
+        else:                                      # cosine to end
+            q = (p - self.w) / max(1e-9, (1.0 - self.w))
+            val = self.e + 0.5 * (self.s - self.e) * (1.0 + float(np.cos(np.pi * q)))
+        self.model.ent_coef = float(val)
+        self.logger.record("train/ent_coef", float(val))
         return True
 
 class LRScheduleCallback(BaseCallback):
@@ -811,7 +956,7 @@ def _parse_args():
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_nonrecurrent3"
+    EXP_ROOT = "checkpoints/experiment_nonrecurrent4"
     os.makedirs(EXP_ROOT, exist_ok=True)
     
     args = _parse_args()
@@ -822,20 +967,24 @@ if __name__ == "__main__":
     # use cli override if provided; else keep the script's default
     n_envs = args.numworkers if args.numworkers is not None else DEFAULT_NUM_WORKERS
 
+    def clip_sched(progress_remaining: float) -> float:
+        # sb3 passes 1.0 -> 0.0 over training; start wide (0.3), end tighter (0.1)
+        return 0.1 + 0.2 * progress_remaining
+
     # ---- sb3 hyperparams ----
     # note: with vectorized training, total rollout per update = n_steps * n_envs
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=16384,    # must divide n_steps * n_envs
-        n_epochs=10,
+        n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        batch_size=8192,    # must divide n_steps * n_envs
+        n_epochs=12,
         learning_rate=3e-4,
-        gamma=0.999,
-        gae_lambda=0.95,
-        ent_coef=0.0077,
-        clip_range=0.2,
-        target_kl=0.05,
+        gamma=0.997,
+        gae_lambda=0.96,
+        ent_coef=0.02,
+        clip_range=clip_sched,
+        target_kl=0.1,
     )
 
     policy_kwargs = dict(
@@ -936,6 +1085,7 @@ if __name__ == "__main__":
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
     rb_cb  = RewardBreakdownCallback(verbose=1)
     timing_cb = PhaseTimerCallback(verbose=1)
+    entSched_cb = EntropyScheduleCallback(total_timesteps=total_steps, start=0.02, end=0.005, warmup_frac=0.02)
 
     # learning-rate scheduler (cosine decay with 2% warmup; 3e-4 -> 3e-5)
     lrSched_cb = LRScheduleCallback(

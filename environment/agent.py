@@ -35,6 +35,8 @@ from gymnasium import spaces
 import pymunk
 from typing import Dict, Optional
 
+from user.reward_fastpath import get_ctx
+
 # heavy viz/io — only import when not headless; else define names as None to keep references valid
 try:
     if not HEADLESS:
@@ -319,6 +321,9 @@ class RewardManager:
 
     # anchor: process_fast
     def process(self, env, dt) -> float:
+        # prime the per-step fast context exactly once
+        _ = get_ctx(env, dt)
+
         # ensure active terms reflect latest config
         if getattr(self, "_cfg_epoch", 0) != getattr(self, "_last_epoch", -1):
             self._rebuild_active_terms()
@@ -759,6 +764,13 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
 
     def reset(self, seed=None, options=None):
         observations, info = self.raw_env.reset()
+
+        # clear cached reward ctx on fresh episode
+        try:
+            from user.reward_fastpath import clear_cached_ctx
+            clear_cached_ctx(self.raw_env)
+        except Exception:
+            pass
 
         if self.reward_manager is not None:
             self.reward_manager.reset()
