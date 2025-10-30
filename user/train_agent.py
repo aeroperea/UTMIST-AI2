@@ -729,14 +729,14 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.7),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=25,
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=50,
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.77,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.88,
                                            params={"y_thresh": 0.8, "pos_only": True}),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=5.0),
+        'head_to_opponent': RewTerm(func=head_to_opponent, weight=10.0),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
@@ -747,7 +747,7 @@ def gen_reward_manager(log_terms: bool=True):
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
         'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-7.0),
-        'taunt_reward': RewTerm(func=in_state_reward, weight=-0.4, params={'desired_state': TauntState}),
+        'taunt_reward': RewTerm(func=in_state_reward, weight=-1.0, params={'desired_state': TauntState}),
     }
     signal_subscriptions = {
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=20)),
@@ -998,13 +998,13 @@ def _parse_args():
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_nonrecurrent6"
+    EXP_ROOT = "checkpoints/experiment_nonrecurrent7"
     os.makedirs(EXP_ROOT, exist_ok=True)
     
     args = _parse_args()
 
     # single source of truth for the built-in default
-    DEFAULT_NUM_WORKERS = 40
+    DEFAULT_NUM_WORKERS = 32
 
     # use cli override if provided; else keep the script's default
     n_envs = args.numworkers if args.numworkers is not None else DEFAULT_NUM_WORKERS
@@ -1018,10 +1018,10 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size= 32768,    # must divide n_steps * n_envs
+        n_steps=1024,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
+        batch_size= 8192,    # must divide n_steps * n_envs
         n_epochs=5,
-        learning_rate=2.75e-4,
+        learning_rate=3e-4,
         gamma=0.997,
         gae_lambda=0.96,
         ent_coef=0.02,
@@ -1031,7 +1031,7 @@ if __name__ == "__main__":
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-        net_arch=[dict(pi=[512, 256, 128], vf=[512, 256, 128])],
+        net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128])],
         features_extractor_class=MLPExtractor,
         features_extractor_kwargs=dict(features_dim=256, hidden_dim=128)
         )
