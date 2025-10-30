@@ -573,14 +573,14 @@ def on_combo_reward(env: WarehouseBrawl, agent: str) -> float:
 '''
 Add your dictionary of RewardFunctions here using RewTerms
 '''
-def gen_reward_manager():
+def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
-        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=1.0),
-        'damage_reward': RewTerm(func=damage_interaction_reward, weight=1.0, params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
+        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.5),
+        'damage_reward': RewTerm(func=damage_interaction_reward, weight=2.0, params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.5, params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.077),
+        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.088),
         'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.002),
         #'taunt_reward': RewTerm(func=in_state_reward, weight=0.2, params={'desired_state': TauntState}),
@@ -592,7 +592,7 @@ def gen_reward_manager():
         'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=10)),
         'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=15))
     }
-    return RewardManager(reward_functions, signal_subscriptions)
+    return RewardManager(reward_functions, signal_subscriptions, log_terms=log_terms)
 
 class RewardBreakdownCallback(BaseCallback):
     def __init__(self, verbose: int = 0):
@@ -686,6 +686,73 @@ class RewardScheduleCallback(BaseCallback):
             self._i += 1
         return True
 
+class LRScheduleCallback(BaseCallback):
+    """
+    cosine/linear/step lr scheduling for any sb3 algo.
+    - updates model.policy.optimizer.param_groups[].lr
+    - logs current lr to 'train/lr'
+    """
+    def __init__(
+        self,
+        total_timesteps: int,
+        initial_lr: float,
+        final_lr: float = 3e-5,
+        warmup_frac: float = 0.02,
+        schedule: str = "cosine",           # {"cosine","linear","step"}
+        step_milestones: list[int] | None = None,  # used if schedule == "step" (absolute steps)
+        step_factor: float = 0.5,           # multiply lr by this each milestone (min-capped by final_lr)
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        assert total_timesteps > 0, "total_timesteps must be > 0"
+        self.T = int(total_timesteps)
+        self.lr0 = float(initial_lr)
+        self.lrf = float(final_lr)
+        self.warm = float(max(0.0, min(0.95, warmup_frac)))
+        self.schedule = schedule
+        self.milestones = sorted(step_milestones or [])
+        self.step_factor = float(step_factor)
+
+    def _on_training_start(self) -> None:
+        # ensure we start from the intended base lr
+        self._set_lr(self.lr0)
+
+    def _on_step(self) -> bool:
+        t = int(self.num_timesteps)
+
+        if self.schedule == "step":
+            k = 0
+            # count how many milestones we've passed
+            while k < len(self.milestones) and t >= self.milestones[k]:
+                k += 1
+            lr = max(self.lrf, self.lr0 * (self.step_factor ** k))
+        else:
+            # normalized progress [0,1]
+            p = min(1.0, max(0.0, t / self.T))
+            if self.warm > 0.0 and p < self.warm:
+                # linear warmup: 0 -> lr0
+                lr = self.lr0 * (p / self.warm)
+            else:
+                q = 0.0 if p <= self.warm else (p - self.warm) / max(1e-9, (1.0 - self.warm))
+                if self.schedule == "linear":
+                    lr = self.lr0 + (self.lrf - self.lr0) * q
+                else:
+                    # cosine (default)
+                    lr = self.lrf + 0.5 * (self.lr0 - self.lrf) * (1.0 + float(np.cos(np.pi * q)))
+
+        self._set_lr(lr)
+        self.logger.record("train/lr", float(lr))
+        if self.verbose and (t % 10000 == 0):
+            print(f"[lr] t={t} lr={lr:.6g}")
+        return True
+
+    def _set_lr(self, lr: float) -> None:
+        opt = getattr(self.model.policy, "optimizer", None)
+        if opt is None:
+            return
+        for g in opt.param_groups:
+            g["lr"] = float(lr)
+
 
 # --- env factory ---
 
@@ -698,10 +765,10 @@ def make_env(i: int,
     returns a thunk that builds ONE independent env (needed by VecEnv)
     """
     def _init():
-        import types
-        # silence audio for headless workers
+        import os as _os, torch as _torch
+        # headless + single-thread hints
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""   # workers see no gpu
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
         torch.set_num_threads(1)
         os.environ.setdefault("OMP_NUM_THREADS", "1")
         os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -717,25 +784,20 @@ def make_env(i: int,
         }
         opp_cfg = OpponentsCfg(opponents=opponents)
 
-        # do NOT pass a SaveHandler into workers
-        rm = gen_reward_manager()
+	# do NOT pass a SaveHandler into workers
+        rm = gen_reward_manager(log_terms=False)
         env = SelfPlayWarehouseBrawl(
             reward_manager=rm,
             opponent_cfg=opp_cfg,
             save_handler=None,
             resolution=resolution,
-            train_mode=True, mode=RenderMode.NONE
+            train_mode=True,
+            mode=RenderMode.NONE,
+            debug_log_terms=False
         )
         env.raw_env = PrevPosWrapper(env.raw_env)
-        rm.subscribe_signals(env.raw_env)  # <-- take this from original
-        
-        def set_reward_weights(self, updates: dict[str, float], zero_missing: bool = False):
-            # call down into the real env (SelfPlayWarehouseBrawl -> reward_manager)
-            self.env.reward_manager.update_weights(updates, zero_missing=zero_missing)
-        
-        m = Monitor(env)
-        m.set_reward_weights = types.MethodType(set_reward_weights, m)
-        return m
+        rm.subscribe_signals(env.raw_env)
+        return env
 
     return _init
 
@@ -756,7 +818,7 @@ if __name__ == "__main__":
         n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
         batch_size=16384,    # must divide n_steps * n_envs
         n_epochs=10,
-        learning_rate=4e-4,
+        learning_rate=3e-4,
         gamma=0.999,
         gae_lambda=0.95,
         ent_coef=0.0077,
@@ -846,11 +908,26 @@ if __name__ == "__main__":
         save_replay_buffer=False,
         save_vecnormalize=False,
     )
+    
+    total_steps = 7_000_000
 
     # callbacks
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
     rb_cb  = RewardBreakdownCallback(verbose=1)
     timing_cb = PhaseTimerCallback(verbose=1)
+
+    # learning-rate scheduler (cosine decay with 2% warmup; 3e-4 -> 3e-5)
+    lrSched_cb = LRScheduleCallback(
+        total_timesteps=total_steps,
+        initial_lr=sb3_kwargs["learning_rate"],
+        final_lr=3e-5,
+        warmup_frac=0.02,
+        schedule="cosine",
+        # if you prefer step decay instead:
+        # schedule="step", step_milestones=[1_500_000, 3_000_000, 5_000_000], step_factor=0.5,
+        verbose=0,
+    )
+
     # rwSched_cb = RewardScheduleCallback(
     #             schedule=[
     #                 (100_000, {"head_to_opponent": 0.10}, False),
@@ -861,12 +938,12 @@ if __name__ == "__main__":
     #         )
 
     # ---- train ----
-    total_steps = 7_000_000
     model.learn(total_timesteps=total_steps, callback=CallbackList(
                                                         [ckpt_cb, 
                                                          vec_cb, 
                                                          rb_cb, 
                                                          timing_cb,
+                                                         lrSched_cb,
                                                         #  rwSched_cb
                                                          ]))
 

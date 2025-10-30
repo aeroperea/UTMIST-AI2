@@ -550,38 +550,85 @@ class SelfPlayRandom(SelfPlayHandler):
 
 # simple directory-backed self-play handlers (avoid passing SaveHandler into subprocesses)
 class DirSelfPlayLatest(SelfPlayHandler):
-    def __init__(self, agent_partial: partial, ckpt_dir: str):
+    def __init__(self, agent_partial: partial, ckpt_dir: str, max_cache: int=4):
         super().__init__(agent_partial)
         self.ckpt_dir = ckpt_dir
-        self._cache = []
+        self._cache: dict[str, Agent] = {}
+        self._order: list[str] = []
+        self._files: list[str] = []
         self._last_count = -1
+        self._max_cache = int(max_cache)
+
     def _refresh(self):
         files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
         if len(files) != self._last_count:
-            self._cache = sorted(files, key=lambda f: int(f.split("_")[-2]))
+            files.sort(key=lambda f: int(f.split("_")[-2]))
+            self._files = files
             self._last_count = len(files)
+
+    def _get_or_load(self, path: Optional[str]) -> Agent:
+        if path is None:
+            ag = ConstantAgent()
+            ag.get_env_info(self.env)
+            return ag
+        if path in self._cache:
+            ag = self._cache[path]
+            ag.reset()
+            return ag
+        opponent = self.agent_partial(file_path=path)
+        opponent.get_env_info(self.env)
+        self._cache[path] = opponent
+        self._order.append(path)
+        if len(self._order) > self._max_cache:
+            evict = self._order.pop(0)
+            self._cache.pop(evict, None)
+        return opponent
+
     def get_opponent(self) -> Agent:
         self._refresh()
-        chosen = self._cache[-1] if self._cache else None
+        chosen = self._files[-1] if self._files else None
         path = os.path.join(self.ckpt_dir, chosen) if chosen else None
-        return self.get_model_from_path(path)
+        return self._get_or_load(path)
 
 class DirSelfPlayRandom(SelfPlayHandler):
-    def __init__(self, agent_partial: partial, ckpt_dir: str):
+    def __init__(self, agent_partial: partial, ckpt_dir: str, max_cache: int=4):
         super().__init__(agent_partial)
         self.ckpt_dir = ckpt_dir
-        self._cache = []
+        self._cache: dict[str, Agent] = {}
+        self._order: list[str] = []
+        self._files: list[str] = []
         self._last_count = -1
+        self._max_cache = int(max_cache)
+
     def _refresh(self):
         files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
         if len(files) != self._last_count:
-            self._cache = files
+            self._files = files
             self._last_count = len(files)
+
+    def _get_or_load(self, path: Optional[str]) -> Agent:
+        if path is None:
+            ag = ConstantAgent()
+            ag.get_env_info(self.env)
+            return ag
+        if path in self._cache:
+            ag = self._cache[path]
+            ag.reset()
+            return ag
+        opponent = self.agent_partial(file_path=path)
+        opponent.get_env_info(self.env)
+        self._cache[path] = opponent
+        self._order.append(path)
+        if len(self._order) > self._max_cache:
+            evict = self._order.pop(0)
+            self._cache.pop(evict, None)
+        return opponent
+
     def get_opponent(self) -> Agent:
         self._refresh()
-        chosen = random.choice(self._cache) if self._cache else None
+        chosen = random.choice(self._files) if self._files else None
         path = os.path.join(self.ckpt_dir, chosen) if chosen else None
-        return self.get_model_from_path(path)
+        return self._get_or_load(path)
 
 @dataclass
 class OpponentsCfg():
@@ -638,69 +685,52 @@ class OpponentsCfg():
 
 class SelfPlayWarehouseBrawl(gymnasium.Env):
     """Custom Environment that follows gym interface."""
-
     metadata = {"render_modes": ["human"], "render_fps": 30}
 
     def __init__(self,
-                 reward_manager: Optional[RewardManager]=None,
-                 opponent_cfg: OpponentsCfg=OpponentsCfg(),
-                 save_handler: Optional[SaveHandler]=None,
+                 reward_manager: Optional["RewardManager"]=None,
+                 opponent_cfg: "OpponentsCfg"=None,
+                 save_handler: Optional["SaveHandler"]=None,
                  render_every: int | None = None,
-                 resolution: CameraResolution=CameraResolution.LOW, 
-                 train_mode=True, mode: RenderMode=RenderMode.RGB_ARRAY):
-        """
-        Initializes the environment.
-
-        Args:
-            reward_manager (Optional[RewardManager]): Reward manager.
-            opponent_cfg (OpponentCfg): Configuration for opponents.
-            save_handler (SaveHandler | None): set only when training from a single process that writes checkpoints.
-            render_every (int | None): Number of steps between a demo render (None if no rendering).
-        """
+                 resolution: "CameraResolution"="CameraResolution.LOW",
+                 train_mode: bool=True,
+                 mode: "RenderMode"="RenderMode.RGB_ARRAY",
+                 debug_log_terms: bool=False):
+        # anchor: sp_env_init
         super().__init__()
-
         self.train_mode = train_mode
         self.reward_manager = reward_manager
         self.save_handler = save_handler
-        self.opponent_cfg = opponent_cfg
+        self.opponent_cfg = opponent_cfg or OpponentsCfg()
         self.render_every = render_every
         self.resolution = resolution
         self.mode = mode
+        self.debug_log_terms = bool(debug_log_terms)
 
         self.games_done = 0
 
-        # give OpponentCfg references, and normalize probabilities
+        # setup opponents
         self.opponent_cfg.env = self
         self.opponent_cfg.validate_probabilities()
-
-        # wire up self-play handlers without forcing a save_handler
         for _, (prob, handler) in self.opponent_cfg.opponents.items():
             if isinstance(handler, SelfPlayHandler):
                 handler.env = self
                 if self.save_handler is not None:
                     handler.save_handler = self.save_handler
 
-        def probe_arena_bounds(env):  # env is WarehouseBrawl (not the wrapper)
-            # requires pymunk; uses static shapes to infer the stage box
-            import pymunk
-            bbs = [sh.bb for sh in env.space.shapes if sh.body.body_type == pymunk.Body.STATIC]
-            xmin = min(bb.left   for bb in bbs)
-            xmax = max(bb.right  for bb in bbs)
-            ymin = min(bb.bottom for bb in bbs)
-            ymax = max(bb.top    for bb in bbs)
-            print(f"arena static bounds: x[{xmin:.2f}, {xmax:.2f}] width={xmax-xmin:.2f} | "
-                f"y[{ymin:.2f}, {ymax:.2f}] height={ymax-ymin:.2f}")
-            return xmin, xmax, ymin, ymax
-
+        # construct raw env and mirror spaces/helpers
         self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=train_mode, mode=mode)
-        # probe_arena_bounds(self.raw_env)
         self.action_space = self.raw_env.action_space
         self.act_helper = self.raw_env.act_helper
         self.observation_space = self.raw_env.observation_space
         self.obs_helper = self.raw_env.obs_helper
 
+    def set_reward_weights(self, updates: Dict[str, float], zero_missing: bool=False) -> None:
+        # anchor: sp_env_set_weights
+        if self.reward_manager is not None:
+            self.reward_manager.update_weights(updates, zero_missing=zero_missing)
+
     def on_training_start(self):
-        # update SaveHandler if present
         if self.save_handler is not None:
             self.save_handler.update_info()
 
@@ -710,11 +740,8 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
             self.save_handler.save_agent()
 
     def step(self, action):
-        full_action = {
-            0: action,
-            1: self.opponent_agent.predict(self.opponent_obs),
-        }
-
+        # anchor: sp_env_step_trim_info
+        full_action = {0: action, 1: self.opponent_agent.predict(self.opponent_obs)}
         observations, rewards, terminated, truncated, info = self.raw_env.step(full_action)
 
         if self.save_handler is not None:
@@ -723,17 +750,14 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         if self.reward_manager is None:
             reward = rewards[0]
         else:
-            # use the env fps if available
             dt = 1.0 / getattr(self.raw_env, "fps", 30.0)
             reward = self.reward_manager.process(self.raw_env, dt)
 
-         # ensure we return a dict for player 0 and attach breakdown
-        info0 = info[0] if isinstance(info, (list, tuple)) else info
-        if hasattr(self.reward_manager, "last_terms"):
-            info0 = dict(info0)  # copy if needed
+        info0: Dict[str, Any] = info[0] if isinstance(info, (list, tuple)) else info
+        if self.debug_log_terms and hasattr(self.reward_manager, "last_terms"):
+            info0 = dict(info0)
             info0["rew_terms"] = dict(self.reward_manager.last_terms)
             info0["rew_signals"] = float(self.reward_manager.last_signals)
-
 
         return observations[0], reward, terminated, truncated, info0
 
@@ -743,21 +767,16 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         if self.reward_manager is not None:
             self.reward_manager.reset()
 
-        # select agent
         new_agent: Agent = self.opponent_cfg.on_env_reset()
         if new_agent is not None:
-            self.opponent_agent: Agent = new_agent
+            self.opponent_agent = new_agent
         self.opponent_obs = observations[1]
 
         self.games_done += 1
-        # if self.render_every is not None and self.games_done % self.render_every == 0:
-        #     self.render_out_video()
-
         return observations[0], info
 
     def render(self):
-        img = self.raw_env.render()
-        return img
+        return self.raw_env.render()
 
     def close(self):
         pass
