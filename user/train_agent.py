@@ -850,7 +850,7 @@ if __name__ == "__main__":
         [make_env(i, EXP_ROOT, policy_partial_cpu, opponent_mode="random", resolution=CameraResolution.LOW)
         for i in range(n_envs)],
         # on linux, prefer default 'fork' unless you hit cuda/pytorch issues
-        # start_method="spawn"
+        start_method="spawn"
     )
 
     mon_env = VecMonitor(base_env, filename=os.path.join(EXP_ROOT, "monitor"))
