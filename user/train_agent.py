@@ -34,7 +34,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMon
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
 #
 from environment.agent import *
-from user.reward_fastpath import ctx_or_compute(env)
+from user.reward_fastpath import ctx_or_compute
 from typing import Optional, Type, List, Tuple
 
 import time
