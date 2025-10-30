@@ -626,7 +626,7 @@ def platform_aware_approach(
         return 0.0
     return delta
 
-def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.0, pos_only: bool = True) -> float:
+def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.0, pos_only: bool = False) -> float:
     ctx = ctx_or_compute(env)
     d_prev = (ctx.ppx - ctx.opx)
     d_curr = (ctx.px  - ctx.ox)
