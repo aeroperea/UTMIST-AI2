@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Any, Optional
 import math
 
+def _sign(x: float) -> float:
+    return -1.0 if x < 0.0 else (1.0 if x > 0.0 else 0.0)
+
 # anchor: rew_ctx_def
 @dataclass(slots=True, frozen=True)
 class RewCtx:
@@ -13,6 +16,8 @@ class RewCtx:
     px: float; py: float; pvx: float; pvy: float
     ppx: float; ppy: float
     p_state: Any; p_attacking: bool; p_grounded: bool
+    # inferred facing: -1 left, +1 right, 0 unknown
+    p_face: float
     # opponent
     ox: float; oy: float; ovx: float; ovy: float
     opx: float; opy: float
@@ -20,7 +25,7 @@ class RewCtx:
     # derived
     dx: float; dy: float; dist2: float
     half_w: float; half_h: float
-    # tokens (optional: for stale checks if you ever cache between steps)
+    # tokens
     _tok_px: float; _tok_py: float; _tok_ox: float; _tok_oy: float
 
 # anchor: unwrap_env
@@ -65,10 +70,29 @@ def _compute_ctx(base, dt: float) -> RewCtx:
     p_attacking = (getattr(p_state, "__class__", type).__name__ == "AttackState")
     p_grounded = bool(getattr(p, "is_on_floor", lambda: False)())
 
+    # infer facing sign robustly
+    pf_attr = getattr(p, "facing", None)
+    p_face = 0.0
+    if isinstance(pf_attr, (int, float)) and pf_attr != 0:
+        p_face = -1.0 if pf_attr < 0 else 1.0
+    else:
+        s = str(pf_attr) if pf_attr is not None else ""
+        if "LEFT" in s:  p_face = -1.0
+        elif "RIGHT" in s: p_face =  1.0
+        else:
+            # fallback on recent motion
+            dx_step = px - ppx
+            if abs(pvx) > 0.1:
+                p_face = _sign(pvx)
+            elif abs(dx_step) > 1e-3:
+                p_face = _sign(dx_step)
+            else:
+                p_face = 0.0
+
     return RewCtx(
         dt=float(dt),
         px=px, py=py, pvx=pvx, pvy=pvy, ppx=ppx, ppy=ppy, p_state=p_state,
-        p_attacking=p_attacking, p_grounded=p_grounded,
+        p_attacking=p_attacking, p_grounded=p_grounded, p_face=p_face,
         ox=ox, oy=oy, ovx=ovx, ovy=ovy, opx=opx, opy=opy, o_state=o_state,
         dx=dx, dy=dy, dist2=dist2, half_w=half_w, half_h=half_h,
         _tok_px=px, _tok_py=py, _tok_ox=ox, _tok_oy=oy,

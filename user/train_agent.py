@@ -384,6 +384,9 @@ class CustomAgent(Agent):
 # ----------------------------- REWARD FUNCTIONS API -----------------------------
 # --------------------------------------------------------------------------------
 
+def _sign(x: float) -> float:
+    return -1.0 if x < 0.0 else (1.0 if x > 0.0 else 0.0)
+
 '''
 Example Reward Functions:
 - Find more [here](https://colab.research.google.com/drive/1qMs336DclBwdn6JBASa5ioDIfvenW8Ha?usp=sharing#scrollTo=-XAOXXMPTiHJ).
@@ -575,17 +578,65 @@ def attack_quality_reward(
     distance_thresh: float = 2.5,
     near_bonus_scale: float = 0.6,
     far_penalty_scale: float = 1.2,
+    misalign_scale: float = 0.5,   # new: punish wrong-way swings
+    away_scale: float = 0.35,      # new: punish moving away while attacking
+    v_cap: float = 6.0,            # new: velocity cap for away penalty
+    edge_pad: float = 1.5          # new: boost penalty near edge
 ) -> float:
     ctx = ctx_or_compute(env)
-    # not attacking -> zero
     if not ctx.p_attacking:
         return 0.0
+
     r2 = distance_thresh * distance_thresh
     if ctx.dist2 <= r2:
         gain = (r2 - ctx.dist2) * near_bonus_scale
-        return gain * ctx.dt
-    penalty = (ctx.dist2 - r2) * (-far_penalty_scale)
-    return penalty * ctx.dt
+    else:
+        gain = (ctx.dist2 - r2) * (-far_penalty_scale)
+
+    # facing alignment gate
+    sdx = _sign(ctx.dx)                   # player at right of opp -> sdx>0 means opp is left
+    desired = -sdx if sdx != 0.0 else ctx.p_face
+    align = 0.5 * (1.0 + desired * ctx.p_face)   # 0..1, 1 = facing toward
+    gain *= (0.25 + 0.75 * align)                # keep some gradient when misaligned
+
+    # away-motion penalty (only when moving away)
+    away = 1.0 if (sdx * ctx.pvx) > 0.0 else 0.0
+    speed = min(1.0, abs(ctx.pvx) / max(1e-6, v_cap))
+    away_term = away_scale * away * speed
+
+    # near-edge penalty when attacking
+    edge = max(0.0, (abs(ctx.px) - (ctx.half_w - edge_pad)) / max(1e-6, edge_pad))
+    edge_term = 0.5 * edge  # bounded 0..0.5
+
+    # misalignment penalty
+    mis_term = misalign_scale * (1.0 - align)
+
+    return (gain - (mis_term + away_term + edge_term)) * ctx.dt
+
+def attack_misalignment_penalty(
+    env: WarehouseBrawl,
+    v_cap: float = 6.0,
+    edge_pad: float = 1.5
+) -> float:
+    # unified small penalty to discourage obvious bad swings
+    ctx = ctx_or_compute(env)
+    if not ctx.p_attacking:
+        return 0.0
+    sdx = _sign(ctx.dx)
+    if sdx == 0.0:
+        return 0.0
+
+    desired = -sdx
+    align = 0.5 * (1.0 + desired * ctx.p_face)  # 0..1
+    mis = 1.0 - align
+
+    away = 1.0 if (sdx * ctx.pvx) > 0.0 else 0.0
+    speed = min(1.0, abs(ctx.pvx)/max(1e-6, v_cap))
+
+    edge = max(0.0, (abs(ctx.px) - (ctx.half_w - edge_pad)) / max(1e-6, edge_pad))
+
+    raw = 0.6*mis + 0.3*away*speed + 0.1*edge       # bounded <= 1.0
+    return -min(1.0, raw) * ctx.dt
 
 def penalize_useless_attacks_shaped(
     env: WarehouseBrawl,
@@ -688,7 +739,7 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.30),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=17,
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=18,
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.77,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
@@ -699,9 +750,10 @@ def gen_reward_manager(log_terms: bool=True):
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
-            weight=1.0,
-            params=dict(distance_thresh=2.0, near_bonus_scale=0.9, far_penalty_scale=1.25),
+            weight=1.25,
+            params=dict(distance_thresh=1.75, near_bonus_scale=0.9, far_penalty_scale=1.25),
         ),
+        'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=0.9),
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
         'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.002),
@@ -709,7 +761,7 @@ def gen_reward_manager(log_terms: bool=True):
     }
     signal_subscriptions = {
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
-        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=25)),
+        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=30)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
         'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=11)),
         'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=13))
