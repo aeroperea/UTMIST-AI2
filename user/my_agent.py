@@ -38,7 +38,7 @@ class SubmittedAgent(Agent):
             activation_fn=nn.SiLU,
             net_arch=dict(pi=[256, 256, 128], vf=[256, 256, 128]),
             features_extractor_class=MLPExtractor,
-            features_extractor_kwargs=dict(features_dim=256, hidden_dim=128),
+            features_extractor_kwargs=dict(features_dim=256, hidden_dim=512),
         )
 
         # env spec must match dims of the trained model

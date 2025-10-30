@@ -329,7 +329,41 @@ class MLPExtractor(BaseFeaturesExtractor):
             features_extractor_class=cls,
             features_extractor_kwargs=dict(features_dim=features_dim, hidden_dim=hidden_dim) #NOTE: features_dim = 10 to match action space output
         )
-    
+
+class ResMLPExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space, features_dim=256, hidden_dim=512):
+        super().__init__(observation_space, features_dim)
+        obs_dim = observation_space.shape[0]
+        self.fc1 = nn.Linear(obs_dim, hidden_dim)
+        self.ln1 = nn.LayerNorm(hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, 256)    # bottleneck
+        self.out = nn.Linear(256, features_dim)  # identity if features_dim==256
+        self.act = nn.SiLU()
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in [self.fc1, self.fc2, self.fc3, self.out]:
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=math.sqrt(2))
+                nn.init.zeros_(m.bias)
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        x = self.act(self.ln1(self.fc1(obs)))
+        h = self.act(self.fc2(x))
+        x = x + h
+        x = self.act(self.fc3(x))
+        return self.out(x)
+
+    @classmethod
+    def get_policy_kwargs(cls, features_dim: int = 256, hidden_dim: int = 512) -> dict:
+        # convenience helper to match how you're calling extractor.get_policy_kwargs()
+        return dict(
+            features_extractor_class=cls,
+            features_extractor_kwargs=dict(features_dim=features_dim, hidden_dim=hidden_dim)
+        )
+
+
 class CustomAgent(Agent):
     def __init__(
         self,
@@ -999,7 +1033,7 @@ def _parse_args():
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_nonrecurrent7"
+    EXP_ROOT = "checkpoints/reluExtractor0"
     os.makedirs(EXP_ROOT, exist_ok=True)
     
     args = _parse_args()
@@ -1021,7 +1055,7 @@ if __name__ == "__main__":
         verbose=1,
         n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
         batch_size=16384,    # must divide n_steps * n_envs
-        n_epochs=6,
+        n_epochs=7,
         learning_rate=3e-4,
         gamma=0.997,
         gae_lambda=0.96,
@@ -1033,14 +1067,14 @@ if __name__ == "__main__":
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
         net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128])],
-        features_extractor_class=MLPExtractor,
+        features_extractor_class=ResMLPExtractor,
         features_extractor_kwargs=dict(features_dim=256, hidden_dim=512)
         )
 
     policy_partial_cpu = partial(
         CustomAgent,
         sb3_class=PPO,
-        extractor=MLPExtractor,
+        extractor=ResMLPExtractor,
         sb3_kwargs=dict(device="cpu"),
         policy_kwargs=policy_kwargs
     )
