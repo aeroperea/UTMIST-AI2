@@ -688,31 +688,31 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.30),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=6.7,
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=14,
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.50,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.10,
+        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.2,
                                            params={"y_thresh": 0.8, "pos_only": True}),
-        'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.33),
+        'head_to_opponent': RewTerm(func=head_to_opponent, weight=1.0),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
-            weight=0.22,
+            weight=0.88,
             params=dict(distance_thresh=1, near_bonus_scale=0.9, far_penalty_scale=1.25),
         ),
         # gentle edge avoidance (dt inside: small)
-        'edge_safety':             RewTerm(func=edge_safety, weight=0.02),
+        'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
         'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.002),
-        'taunt_reward': RewTerm(func=in_state_reward, weight=-0.33, params={'desired_state': TauntState}),
+        'taunt_reward': RewTerm(func=in_state_reward, weight=-0.4, params={'desired_state': TauntState}),
     }
     signal_subscriptions = {
-        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
-        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=8)),
-        'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=5)),
-        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=15)),
-        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=5))
+        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=25)),
+        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=20)),
+        'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
+        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=11)),
+        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=13))
     }
     return RewardManager(reward_functions, signal_subscriptions, log_terms=log_terms)
 
@@ -984,7 +984,7 @@ if __name__ == "__main__":
         gae_lambda=0.96,
         ent_coef=0.02,
         clip_range=clip_sched,
-        target_kl=0.09,
+        target_kl=0.099,
     )
 
     policy_kwargs = dict(

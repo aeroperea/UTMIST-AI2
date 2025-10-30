@@ -36,7 +36,7 @@ class SubmittedAgent(Agent):
         # mirror training arch
         policy_kwargs = dict(
             activation_fn=nn.SiLU,
-            net_arch=dict(pi=[512, 512, 256], vf=[512, 512, 256]),
+            net_arch=dict(pi=[512, 256, 128], vf=[512, 256, 128]),
             features_extractor_class=MLPExtractor,
             features_extractor_kwargs=dict(features_dim=256, hidden_dim=512),
         )
