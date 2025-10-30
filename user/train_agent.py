@@ -1019,19 +1019,19 @@ if __name__ == "__main__":
         device="cuda",
         verbose=1,
         n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=16384,    # must divide n_steps * n_envs
-        n_epochs=10,
-        learning_rate=3e-4,
+        batch_size= 32768,    # must divide n_steps * n_envs
+        n_epochs=5,
+        learning_rate=2.75e-4,
         gamma=0.997,
         gae_lambda=0.96,
         ent_coef=0.02,
         clip_range=clip_sched,
-        target_kl=0.1,
+        target_kl=0.03,
     )
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-        net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128])],
+        net_arch=[dict(pi=[512, 256, 128], vf=[512, 256, 128])],
         features_extractor_class=MLPExtractor,
         features_extractor_kwargs=dict(features_dim=256, hidden_dim=128)
         )
