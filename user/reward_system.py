@@ -381,7 +381,7 @@ def gen_reward_manager(log_terms: bool=True):
         # 'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
-        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys_penalty, weight=-7.0),
+        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys_penalty, weight=7.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-1.0, params={'desired_state': TauntState}),
         'fell_off_map': RewTerm(func=fell_off_map_event, weight=-40.0, params={'pad': 1.0, 'only_bottom': False}),
     }
