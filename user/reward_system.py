@@ -335,6 +335,27 @@ def on_combo_reward(env: WarehouseBrawl, agent: str) -> float:
     # reward combos for the player; penalize if opponent combos
     return 1.0 if agent == 'player' else -1.0
 
+def fell_off_map_event(env, pad: float = 0.0, only_bottom: bool = False) -> float:
+    """
+    returns 1.0 exactly once when the player crosses the KO boundary.
+    - pad > 0 shrinks the safe area slightly (fires earlier)
+    - set only_bottom=True if you only want bottom falls
+    """
+    ctx = ctx_or_compute(env)
+    p = env.objects["player"]
+
+    if only_bottom:
+        outside = (ctx.py > (ctx.half_h - pad))
+    else:
+        outside = (abs(ctx.px) > (ctx.half_w - pad)) or (abs(ctx.py) > (ctx.half_h - pad))
+
+    was_outside = bool(getattr(p, "_rw_was_outside", False))
+    fire = outside and not was_outside
+    setattr(p, "_rw_was_outside", outside)
+
+    return 1.0 if fire else 0.0
+
+
 '''
 Add your dictionary of RewardFunctions here using RewTerms
 '''
@@ -362,6 +383,7 @@ def gen_reward_manager(log_terms: bool=True):
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
         'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys_penalty, weight=-7.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-1.0, params={'desired_state': TauntState}),
+        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-40.0, params={'pad': 0.0, 'only_bottom': False}),
     }
     signal_subscriptions = {
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=20)),
