@@ -449,7 +449,7 @@ def _parse_args():
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/FusedFeatureExtractor"
+    EXP_ROOT = "checkpoints/FusedFeatureExtractor1"
     os.makedirs(EXP_ROOT, exist_ok=True)
     
     args = _parse_args()
@@ -589,7 +589,7 @@ if __name__ == "__main__":
     ckpt_cb = CheckpointCallback(
         save_freq=max(1, target_save_every // n_envs),
         save_path=EXP_ROOT,
-        name_prefix="FusedFeatureExtractor",
+        name_prefix="FusedFeatureExtractor1",
         save_replay_buffer=False,
         save_vecnormalize=True,
         verbose=1
@@ -639,11 +639,3 @@ if __name__ == "__main__":
     model.save(os.path.join(EXP_ROOT, "final_model"))
     model.get_vec_normalize_env().save(vn_path)
     vec_env.close()# train-time mirroring for the learner
-        env = ActionMirrorWrapper(
-            env,
-            facing_index=4,   # your facing bit (True=right, False=left)
-            px_index=0, ox_index=32,
-            swap_pairs=((1, 3),),  # A<->D
-            mirror_axes=(), mirror_angles=(),
-            invert_facing=False
-        )
