@@ -448,7 +448,7 @@ def _parse_args():
 
 if __name__ == "__main__":
 
-    name_prefix="FusedFeatureExtractor3(Deeper)"
+    name_prefix="FusedFeatureExtractor3(DeeperStill)"
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
     EXP_ROOT = f'checkpoints/{name_prefix}'
