@@ -1081,67 +1081,66 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
             self.hammer_attacks[self.keys[name]] = move_data 
 
     def step(self, action: dict[int, np.ndarray]):
-        # Create new rewards dict
         self.cur_action = action
         self.rewards[0] = 0.0
         self.rewards[1] = 0.0
         self.logger[0].clear(); self.logger[1].clear()
         self.terminated = False
 
-        self.camera.process()
+        # prebinds (load_fast beats load_attr)
+        camera_process      = self.camera.process
+        objects_items       = self.objects.items
+        is_player           = Player
+        players             = self.players
+        space_step          = self.space.step
+        dt                  = self.dt
+        dropped_try         = DroppedWeaponSpawner.try_drop
+        have_weapon_ctrl    = hasattr(self, "weapon_controller")
+        if have_weapon_ctrl:
+            wc_try_pick_all = self.weapon_controller.try_pick_up_all
+            wc_update       = self.weapon_controller.update
 
-        # Process all other steps
-        for obj_name, obj in self.objects.items():
-            # If player
-            if not isinstance(obj, Player) or obj_name[0:len('SpawnerVFX')] == 'SpawnerVFX': 
+        camera_process()
+
+        for obj_name, obj in objects_items():
+            if not isinstance(obj, is_player) or obj_name[0:len('SpawnerVFX')] == 'SpawnerVFX':
                 obj.process()
-            
-        # Pre-process player step
-        for agent in self.agents:
-            player = self.players[agent]
-            player.pre_process()
 
-        # Process player step
         for agent in self.agents:
-            player = self.players[agent]
+            players[agent].pre_process()
+
+        for agent in self.agents:
+            player = players[agent]
             player.process(action[agent])
 
             if self.game_mode == GameMode.ATTACK_DEBUG and action[agent][9] > 0.5:
                 if not self.train_mode:
                     logger.info("reloading attack data")
                 self.load_attacks()
+
             if player.stocks <= 0:
                 self.terminated = True
                 self.win_signal.emit(agent='player' if agent == 1 else 'opponent')
+
             if player.on_platform is not None:
                 platform_vel = player.on_platform.velocity
                 player.body.velocity = pymunk.Vec2d(platform_vel.x, platform_vel.y)
 
-        # Process physics info
-        for obj_name, obj in self.objects.items():
-            obj.physics_process(self.dt)
+        for _, obj in objects_items():
+            obj.physics_process(dt)
 
-         # PyMunk step
-        self.space.step(self.dt)
+        space_step(dt)
         self.steps += 1
-          # --- Press 'V' to place a DroppedWeaponSpawner of the player's current weapon ---
-        DroppedWeaponSpawner.try_drop(self)
-       
-        if hasattr(self, "weapon_controller"):
-            self.weapon_controller.try_pick_up_all(self.players, self.steps)
-            self.weapon_controller.update(self.steps)
-            
-           
+
+        dropped_try(self)
+
+        if have_weapon_ctrl:
+            wc_try_pick_all(players, self.steps)
+            wc_update(self.steps)
 
         truncated = self.steps >= self.max_timesteps
 
-        # Collect observations
         observations = {agent: self.observe(agent) for agent in self.agents}
-        # Inside your Env.step() or game loop, near the end:
-     #   print(f"[FRAME {self.steps}] "
-      #          f"Player weapon: {self.players[0].weapon} | "
-       #       f"Opponent weapon: {self.players[1].weapon}")
-
         return observations, self.rewards, self.terminated, truncated, {}
 
     def add_reward(self, agent: int, reward: float) -> None:

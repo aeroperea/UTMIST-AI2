@@ -242,6 +242,7 @@ class RewardManager:
         "_active_terms",
         "_cfg_epoch",
         "_last_epoch",
+        "_terms_buf",
     )
 
     def __init__(self, reward_functions: Optional[Dict[str, Any]] = None,
@@ -255,6 +256,7 @@ class RewardManager:
         self.last_terms: Dict[str, float] = {} if self.log_terms else {}
         self.last_signals: float = 0.0
         self._active_terms: List[Tuple[str, Callable[[Any], float], float]] = []
+        self._terms_buf: Dict[str, float] = {}   # internal reuse; callers never see this instance
         self._rebuild_active_terms()
 
     def __setattr__(self, name, value):
@@ -321,44 +323,56 @@ class RewardManager:
 
     # anchor: process_fast
     def process(self, env, dt) -> float:
-        # prime the per-step fast context exactly once
+        # prime fast ctx once (same as before)
         _ = get_ctx(env, dt)
 
-        # ensure active terms reflect latest config
+        # ensure latest table
         if getattr(self, "_cfg_epoch", 0) != getattr(self, "_last_epoch", -1):
             self._rebuild_active_terms()
             self._last_epoch = self._cfg_epoch
 
         signals = self.collected_signal_rewards
         reward = signals
-        log_terms = self.log_terms
-        active = getattr(self, "_active_terms", ())
-        terms_log: Optional[Dict[str, float]] = {} if (log_terms and active) else None
+        active = self._active_terms
 
-        def _run(active_list):
-            r = signals
-            tlog = {} if (log_terms and active_list) else None
-            for name, fn, w in active_list:
-                v = fn(env) * w
-                r += v
-                if tlog is not None:
-                    tlog[name] = v
-            return r, tlog
-
-        try:
-            reward, terms_log = _run(active)
-        except TypeError:
-            # rare: signature changed; rebuild once and retry
-            self._rebuild_active_terms()
-            self._last_epoch = self._cfg_epoch
-            reward, terms_log = _run(self._active_terms)
-
-        if log_terms:
-            # keep pure numerics; callback will call logger.record(...)
-            self.last_terms = terms_log or {}
+        # pooled dict; still expose a fresh copy via last_terms
+        d = self._terms_buf
+        if self.log_terms and active:
+            d.clear()
+            def _run():
+                r = signals
+                for name, fn, w in active:
+                    v = fn(env) * w
+                    r += v
+                    d[name] = v
+                return r
+            try:
+                reward = _run()
+            except TypeError:
+                self._rebuild_active_terms()
+                self._last_epoch = self._cfg_epoch
+                reward = _run()
+            # expose a new dict each step (behavior identical)
+            self.last_terms = dict(d)
             self.last_signals = float(signals)
+        else:
+            # same semantics as before when not logging or no active terms
+            def _run_nolog():
+                r = signals
+                for _, fn, w in active:
+                    r += fn(env) * w
+                return r
+            try:
+                reward = _run_nolog()
+            except TypeError:
+                self._rebuild_active_terms()
+                self._last_epoch = self._cfg_epoch
+                reward = _run_nolog()
+            if self.log_terms:
+                self.last_terms = {}
+                self.last_signals = float(signals)
 
-        # reset signals and accumulate total
+        # reset signals and accumulate total (same as before)
         self.collected_signal_rewards = 0.0
         self.total_reward += reward
         return reward
