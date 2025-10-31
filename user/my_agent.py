@@ -21,12 +21,12 @@ FUSED_EXTRACTOR_KW = dict(
         xy_player=[0, 1],
         xy_opponent=[32, 33],
         use_pairwise=True,
-        # new in fused extractor:
-        facing_index=4,                  # uses your facing bit; set None to use dx fallback
-        flip_x_indices=(0, 2, 32, 34),   # flip x and vx for both agents
-        flip_pair_dx=True,               # also flip engineered pairwise dx
-        invert_facing=False,             # set True only if your facing bit is inverted
-        use_compile=False,               # leave off during early training
+        facing_index=4,
+        flip_x_indices=(0, 2, 32, 34),
+        flip_pair_dx=True,
+        invert_facing=False,
+        use_compile=False,
+        n_blocks=2  # <--- set 4 first; try 6 if value underfits
     )
 
 # --- tiny spec-only env (gymnasium) ---
