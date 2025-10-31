@@ -5,7 +5,7 @@ from user.my_agent import SubmittedAgent
 import pygame
 pygame.init()
 
-path = "checkpoints/FusedFeatureExtractor_2000000_steps.zip"
+path = "checkpoints/FusedFeatureExtractor_7000000_steps.zip"
 
 # my_agent = UserInputAgent()
 my_agent = SubmittedAgent(file_path=path)
