@@ -402,20 +402,20 @@ def gen_reward_manager(log_terms: bool=True):
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=1.0,
                                            params={"y_thresh": 0.8, "pos_only": True}),
         'move_dir_reward': RewTerm(func=head_to_opponent, weight=5.0),
-        'move_towards_reward': RewTerm(func=head_to_opponent, weight=20.0, params={"threshold" : 0.55, "pos_only": True}),
+        'move_towards_reward': RewTerm(func=head_to_opponent, weight=12.0, params={"threshold" : 0.55, "pos_only": True}),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
-        # 'attack_quality': RewTerm(
-        #     func=attack_quality_reward,
-        #     weight=2.0,
-        #     params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=0.55),
-        # ),
-        'idle_penalty': RewTerm(func=idle_penalty, weight=100.0, params={'speed_thresh': 0.7, 'ema_tau': 0.35}),
+        'attack_quality': RewTerm(
+            func=attack_quality_reward,
+            weight=2.0,
+            params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=1.25),
+        ),
+        'idle_penalty': RewTerm(func=idle_penalty, weight=2.5, params={'speed_thresh': 0.7, 'ema_tau': 0.35}),
         # 'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
-        # 'holding_more_than_3_keys': RewTerm(func=holding_nokeys_or_more_than_3keys_penalty, weight=2.5),
+        'holding_more_than_3_keys': RewTerm(func=holding_nokeys_or_more_than_3keys_penalty, weight=7.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-2.0, params={'desired_state': TauntState}),
-        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-5, params={'pad': 1.0, 'only_bottom': False}),
+        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-40.0, params={'pad': 1.0, 'only_bottom': False}),
     }
     signal_subscriptions = {
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=20)),
