@@ -301,9 +301,10 @@ def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.2, pos_only: bool
         return 0.0
     return delta * ctx.dt
 
-def holding_more_than_3_keys_penalty(env: WarehouseBrawl) -> float:
+def holding_nokeys_or_more_than_3keys_penalty(env: WarehouseBrawl) -> float:
     a = env.objects["player"].cur_action
-    return -env.dt if (a > 0.5).sum() > 3 else env.dt
+    keysHeld = (a > 0.5).sum()
+    return -env.dt if keysHeld > 3 or keysHeld == 0 else env.dt
 
 def on_win_reward(env: WarehouseBrawl, agent: str) -> float:
     if agent == 'player':
@@ -355,6 +356,36 @@ def fell_off_map_event(env, pad: float = 0.0, only_bottom: bool = False) -> floa
 
     return 1.0 if fire else 0.0
 
+def idle_penalty(
+    env: WarehouseBrawl,
+    speed_thresh: float = 0.6,   # ~units/sec that count as "moving"
+    ema_tau: float = 0.35        # seconds; larger = slower to react
+) -> float:
+    """
+    penalize standing still using a speed ema.
+    skips during committed actions (attack/dash/dodge/backdash).
+    """
+    ctx = ctx_or_compute(env)
+    p = env.objects["player"]
+
+    vx = float(p.body.velocity.x)
+    vy = float(p.body.velocity.y)
+    speed = math.hypot(vx, vy)
+
+    # ema of speed for stability
+    ema_prev = float(getattr(p, "_rw_speed_ema", speed))
+    alpha = 1.0 - math.exp(-ctx.dt / max(1e-6, ema_tau))
+    ema = (1.0 - alpha) * ema_prev + alpha * speed
+    setattr(p, "_rw_speed_ema", ema)
+
+    # grace: don't punish when the agent is in committed movement/attack states
+    s = getattr(p, "state", None)
+    if isinstance(s, (AttackState, DashState, DodgeState, BackDashState)):
+        return 0.0
+
+    # smooth penalty as ema falls below threshold (bounded in [0,1])
+    t = max(0.0, (speed_thresh - ema) / max(1e-6, speed_thresh))
+    return -(t * t) * ctx.dt
 
 '''
 Add your dictionary of RewardFunctions here using RewTerms
@@ -378,10 +409,11 @@ def gen_reward_manager(log_terms: bool=True):
             weight=2.0,
             params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=1.25),
         ),
+        'idle_penalty': RewTerm(func=idle_penalty, weight=2.5, params={'speed_thresh': 0.7, 'ema_tau': 0.35}),
         # 'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
-        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys_penalty, weight=7.0),
+        'holding_more_than_3_keys': RewTerm(func=holding_nokeys_or_more_than_3keys_penalty, weight=7.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-2.0, params={'desired_state': TauntState}),
         'fell_off_map': RewTerm(func=fell_off_map_event, weight=-40.0, params={'pad': 1.0, 'only_bottom': False}),
     }
