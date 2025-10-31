@@ -490,7 +490,7 @@ if __name__ == "__main__":
         CustomAgent,
         sb3_class=PPO,
         extractor=FusedFeatureExtractor,
-        sb3_kwargs=dict(device="cpu"),
+        sb3_kwargs=dict(device="cuda"),
         policy_kwargs=policy_kwargs
     )
 
