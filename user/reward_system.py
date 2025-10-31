@@ -201,6 +201,8 @@ def attack_quality_reward(
     edge_pad: float = 1.5
 ) -> float:
     ctx = ctx_or_compute(env)
+    if not ctx.p_attacking:
+        return 0.0
 
     r2 = distance_thresh * distance_thresh
 
@@ -214,8 +216,6 @@ def attack_quality_reward(
     # distance terms: gate only the near bonus by alignment (keep far penalty intact)
     if ctx.dist2 <= r2:
         gain = (r2 - ctx.dist2) * near_bonus_scale * (0.25 + 0.75 * align)
-        if not ctx.p_attacking:
-            gain = -gain
     else:
         gain = -(ctx.dist2 - r2) * far_penalty_scale
 
@@ -363,34 +363,33 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.7),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=50,
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*10),
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.77,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=0.88,
+        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=1.0,
                                            params={"y_thresh": 0.8, "pos_only": True}),
         'move_dir_reward': RewTerm(func=head_to_opponent, weight=5.0),
-        'move_towards_reward': RewTerm(func=head_to_opponent, weight=15.0, params={"threshold" : 0.75, "pos_only": True}),
+        'move_towards_reward': RewTerm(func=head_to_opponent, weight=12.0, params={"threshold" : 0.55, "pos_only": True}),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
-            weight=5.0,
-            params=dict(distance_thresh=1.75, near_bonus_scale=0.9, far_penalty_scale=1.25),
+            weight=2.0,
+            params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=1.25),
         ),
         # 'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
-        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys_penalty, weight=-0.7),
-        'taunt_reward': RewTerm(func=in_state_reward, weight=-1.0, params={'desired_state': TauntState}),
-        'taunt_reward': RewTerm(func=in_state_reward, weight=1.0, params={'desired_state': AttackState}),
-        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-40.0, params={'pad': 3.0, 'only_bottom': False}),
+        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys_penalty, weight=7.0),
+        'taunt_reward': RewTerm(func=in_state_reward, weight=-2.0, params={'desired_state': TauntState}),
+        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-40.0, params={'pad': 1.0, 'only_bottom': False}),
     }
     signal_subscriptions = {
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=20)),
-        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=20)),
+        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=25)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
-        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=11)),
+        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=12)),
         'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=14))
     }
     return RewardManager(reward_functions, signal_subscriptions, log_terms=log_terms)

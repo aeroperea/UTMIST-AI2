@@ -448,8 +448,10 @@ def _parse_args():
 
 if __name__ == "__main__":
 
+    name_prefix="FusedFeatureExtractor2"
+
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/FusedFeatureExtractor1" # todo: make this name prfix too
+    EXP_ROOT = f'checkpoints/{name_prefix}'
     os.makedirs(EXP_ROOT, exist_ok=True)
     
     args = _parse_args()
@@ -539,8 +541,7 @@ if __name__ == "__main__":
             clip_obs=10.0,
             gamma=sb3_kwargs["gamma"],
         )
-
-    name_prefix="FusedFeatureExtractor1"
+            
 
     def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
         zips = glob.glob(os.path.join(ckpt_dir, f"{prefix}*.zip"))
