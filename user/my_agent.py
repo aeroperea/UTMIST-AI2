@@ -5,7 +5,7 @@ from typing import Optional
 from environment.agent import Agent
 from stable_baselines3 import PPO
 from stable_baselines3.common.save_util import load_from_zip_file
-from user.train_agent import MLPExtractor
+from user.train_agent import MLPExtractor, ResMLPExtractor
 from torch import nn
 
 import numpy as np
@@ -32,12 +32,13 @@ class SubmittedAgent(Agent):
     def __init__(self, file_path: Optional[str] = None):
         super().__init__(file_path)
 
-    def _initialize(self) -> None:
+    def _initialize(self, feat_extractor = MLPExtractor) -> None:
+
         # mirror training arch
         policy_kwargs = dict(
             activation_fn=nn.SiLU,
             net_arch=dict(pi=[256, 256, 128], vf=[256, 256, 128]),
-            features_extractor_class=MLPExtractor,
+            features_extractor_class=feat_extractor,
             features_extractor_kwargs=dict(features_dim=256, hidden_dim=512),
         )
 
@@ -49,7 +50,7 @@ class SubmittedAgent(Agent):
             "MlpPolicy",
             dummy,
             policy_kwargs=policy_kwargs,
-            device="cpu",
+            device="cuda",
             verbose=0,
             n_steps=32,
             batch_size=32,
@@ -64,7 +65,7 @@ class SubmittedAgent(Agent):
             self.file_path,
             device="cpu",
             custom_objects={
-                "features_extractor_class": MLPExtractor,
+                "features_extractor_class": feat_extractor,
                 "activation_fn": nn.SiLU,
                 "clip_range": 0.2,                    # replace schedules/callables
                 "lr_schedule": (lambda *_: 3e-4),
