@@ -1116,7 +1116,7 @@ if __name__ == "__main__":
     ckpt_cb = CheckpointCallback(
         save_freq=max(1, target_save_every // n_envs),
         save_path=EXP_ROOT,
-        name_prefix="rl_model",
+        name_prefix="MLP_Extractor_Best",
         save_replay_buffer=False,
         save_vecnormalize=False,
     )
