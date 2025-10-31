@@ -448,7 +448,7 @@ def _parse_args():
 
 if __name__ == "__main__":
 
-    name_prefix="FusedFeatureExtractor2"
+    name_prefix="FusedFeatureExtractor3(Deeper)"
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
     EXP_ROOT = f'checkpoints/{name_prefix}'
@@ -471,20 +471,24 @@ if __name__ == "__main__":
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=2048,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=16384,    # must divide n_steps * n_envs
-        n_epochs=4,
-        learning_rate=2.5e-4,
+        n_steps=2048,            # per-env; total rollout = n_steps * n_envs
+        batch_size=16384,        # divides total rollout; 65536/16384 = 4 minibatches
+        n_epochs=4,              # 4 minibatches * 4 epochs = 16 SGD passes / update
+        learning_rate=2.5e-4,    # with LR cosine → ~3e-5 end (your callback handles it)
         gamma=0.997,
         gae_lambda=0.96,
-        ent_coef=0.02,
-        clip_range=clip_sched,
-        target_kl=0.08,
+        ent_coef=0.02,           # decay with your EntropyScheduleCallback
+        clip_range=clip_sched,   # 0.3 → 0.1 over training
+        target_kl=0.08,          # early stop if updates jumpy
         clip_range_vf=0.2,
         normalize_advantage=True,
-        max_grad_norm=0.5
+        max_grad_norm=0.5,
+        # optional (nice with continuous Box + mirroring):
+        # sde_sample_freq=4,
     )
 
+
+    # features_extractor_kwargs
     FUSED_EXTRACTOR_KW = dict(
         features_dim=256,
         hidden_dim=512,
@@ -492,13 +496,14 @@ if __name__ == "__main__":
         xy_player=[0, 1],
         xy_opponent=[32, 33],
         use_pairwise=True,
-        # new in fused extractor:
-        facing_index=4,                  # uses your facing bit; set None to use dx fallback
-        flip_x_indices=(0, 2, 32, 34),   # flip x and vx for both agents
-        flip_pair_dx=True,               # also flip engineered pairwise dx
-        invert_facing=False,             # set True only if your facing bit is inverted
-        use_compile=False,               # leave off during early training
+        facing_index=4,
+        flip_x_indices=(0, 2, 32, 34),
+        flip_pair_dx=True,
+        invert_facing=False,
+        use_compile=False,
+        n_blocks=4,  # <--- set 4 first; try 6 if value underfits
     )
+
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,

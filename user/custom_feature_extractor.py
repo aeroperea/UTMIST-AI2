@@ -90,12 +90,8 @@ class ReZeroBlock(nn.Module):
         h = self.fc2(h)
         return x + self.alpha * h
 
+# anchor: ctor_blocks
 class FusedFeatureExtractor(BaseFeaturesExtractor):
-    """
-    flat box obs with ego-flip, enum embeds, pairwise dx,dy,r2, rezero+rmsnorm trunk.
-    fast path: precomputed enum ranges, in-place flips, single concat.
-    """
-
     def __init__(
         self,
         observation_space: spaces.Box,
@@ -110,9 +106,11 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
         flip_pair_dx: bool = True,
         invert_facing: bool = False,
         use_compile: bool = False,
+        n_blocks: int = 4,  # <--- new: depth knob
     ):
         assert isinstance(observation_space, spaces.Box) and len(observation_space.shape) == 1
         super().__init__(observation_space, features_dim)
+        assert n_blocks >= 1, "n_blocks must be >= 1"
 
         D = int(observation_space.shape[0])
         low  = torch.as_tensor(observation_space.low,  dtype=torch.float32)
@@ -135,7 +133,7 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
                 self._enum_items.append((idx, ncls, dim, name))
                 self.embs[name] = nn.Embedding(ncls, dim)
 
-        # anchor: enum_precompute_affine
+        # precompute enum affine
         if self._enum_items:
             lows, highs, scales, biases = [], [], [], []
             for (idx, ncls, _dim, _name) in self._enum_items:
@@ -157,7 +155,7 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
             self.register_buffer("_enum_scale", torch.empty(0), persistent=False)
             self.register_buffer("_enum_bias",  torch.empty(0), persistent=False)
 
-        # xy and flip config as buffers
+        # xy and flip config
         self.register_buffer("xy_p",     torch.as_tensor(xy_player,   dtype=torch.long) if xy_player   is not None else torch.empty(0, dtype=torch.long), persistent=False)
         self.register_buffer("xy_o",     torch.as_tensor(xy_opponent, dtype=torch.long) if xy_opponent is not None else torch.empty(0, dtype=torch.long), persistent=False)
         self.register_buffer("flip_idx", torch.as_tensor(flip_x_indices, dtype=torch.long) if flip_x_indices else torch.empty(0, dtype=torch.long), persistent=False)
@@ -174,8 +172,8 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
 
         self.in_norm = RMSNorm(in_dim)
         self.embed   = nn.Linear(in_dim, hidden_dim)
-        self.block1  = ReZeroBlock(hidden_dim, act=nn.SiLU(inplace=True))
-        self.block2  = ReZeroBlock(hidden_dim, act=nn.SiLU(inplace=True))
+        self.blocks  = nn.ModuleList([ReZeroBlock(hidden_dim, act=nn.SiLU(inplace=True))
+                                      for _ in range(n_blocks)])
         self.head    = nn.Linear(hidden_dim, features_dim)
         nn.init.kaiming_uniform_(self.embed.weight, nonlinearity="relu")
         nn.init.zeros_(self.embed.bias)
@@ -183,8 +181,13 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
         nn.init.zeros_(self.head.bias)
         self.act = nn.SiLU(inplace=True)
 
+        # optional back-compat attributes (safe no-ops if n_blocks<2)
+        self.block1 = self.blocks[0]
+        self.block2 = self.blocks[1] if len(self.blocks) > 1 else nn.Identity()
+
         if use_compile and hasattr(torch, "compile"):
             self.forward = torch.compile(self.forward, mode="reduce-overhead", fullgraph=False)  # type: ignore
+
 
 
     # map scalar -> class id using cached lows/highs; single pass loop   
@@ -224,32 +227,30 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
         r2 = d.mul(d).sum(-1, keepdim=True)
         return torch.cat((d, r2), dim=-1)
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        # scale to ~[-1,1]
-        x = (obs - self._center) * self._mul
+    # anchor: forward_blocks
+def forward(self, obs: torch.Tensor) -> torch.Tensor:
+    x = (obs - self._center) * self._mul
 
-        # ego flip: in-place on selected columns
-        sign = self._ego_sign(obs)
-        if sign is not None and self.flip_idx.numel():
-            cols = self.flip_idx
-            x[:, cols] = x[:, cols] * sign
+    sign = self._ego_sign(obs)
+    if sign is not None and self.flip_idx.numel():
+        x[:, self.flip_idx] = x[:, self.flip_idx] * sign
 
-        # engineered extras (single concat)
-        parts = [x]
-        e = self._enum_embs(obs)
-        if e.numel():
-            parts.append(e)
-        p = self._pair_features(obs, sign)
-        if p.numel():
-            parts.append(p)
-        x = torch.cat(parts, dim=-1)
+    parts = [x]
+    e = self._enum_embs(obs)
+    if e.numel():
+        parts.append(e)
+    p = self._pair_features(obs, sign)
+    if p.numel():
+        parts.append(p)
+    x = torch.cat(parts, dim=-1)
 
-        x = self.in_norm(x)
-        x = self.act(self.embed(x))
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.act(x)
-        return self.head(x)
+    x = self.in_norm(x)
+    x = self.act(self.embed(x))
+    for b in self.blocks:
+        x = b(x)
+    x = self.act(x)
+    return self.head(x)
+
 
 import numpy as np
 import gymnasium as gym
