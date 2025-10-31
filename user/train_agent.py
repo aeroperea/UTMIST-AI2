@@ -501,7 +501,7 @@ if __name__ == "__main__":
         flip_pair_dx=True,
         invert_facing=False,
         use_compile=False,
-        n_blocks=4,  # <--- set 4 first; try 6 if value underfits
+        n_blocks=6  # <--- set 4 first; try 6 if value underfits
     )
 
 
