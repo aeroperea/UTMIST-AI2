@@ -448,7 +448,7 @@ def _parse_args():
 
 if __name__ == "__main__":
 
-    name_prefix="FusedFeatureExtractor3(DeeperStill)"
+    name_prefix="FusedFeatureExtractor6N(DeeperStill)"
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
     EXP_ROOT = f'checkpoints/{name_prefix}'
@@ -474,12 +474,12 @@ if __name__ == "__main__":
         n_steps=2048,            # per-env; total rollout = n_steps * n_envs
         batch_size=16384,        # divides total rollout; 65536/16384 = 4 minibatches
         n_epochs=4,              # 4 minibatches * 4 epochs = 16 SGD passes / update
-        learning_rate=2.5e-4,    # with LR cosine → ~3e-5 end (your callback handles it)
+        learning_rate=2.25e-4,    # with LR cosine → ~3e-5 end (your callback handles it)
         gamma=0.997,
         gae_lambda=0.96,
         ent_coef=0.02,           # decay with your EntropyScheduleCallback
         clip_range=clip_sched,   # 0.3 → 0.1 over training
-        target_kl=0.08,          # early stop if updates jumpy
+        target_kl=0.06,          # early stop if updates jumpy
         clip_range_vf=0.2,
         normalize_advantage=True,
         max_grad_norm=0.5,
