@@ -1,5 +1,6 @@
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
 import time
+import numpy as np
 
 class RewardBreakdownCallback(BaseCallback):
     def __init__(self, verbose: int = 0):

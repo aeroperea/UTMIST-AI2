@@ -394,7 +394,6 @@ def make_env(i: int,
     returns a thunk that builds ONE independent env (needed by VecEnv)
     """
     def _init():
-        import os, torch
         # headless + single-thread hints
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -473,18 +472,29 @@ if __name__ == "__main__":
         max_grad_norm=0.5
     )
 
+    FUSED_EXTRACTOR_KW = dict(
+        features_dim=256,
+        hidden_dim=512,
+        enum_fields=observation_fields,
+        xy_player=[0, 1],
+        xy_opponent=[32, 33],
+        use_pairwise=True,
+        # new in fused extractor:
+        facing_index=4,                  # uses your facing bit; set None to use dx fallback
+        flip_x_indices=(0, 2, 32, 34),   # flip x and vx for both agents
+        flip_pair_dx=True,               # also flip engineered pairwise dx
+        invert_facing=False,             # set True only if your facing bit is inverted
+        use_compile=False,               # leave off during early training
+    )
+
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-        net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128])],
-        features_extractor_class=FusedFeatureExtractor,
-        features_extractor_kwargs=dict(
-        features_dim=256, hidden_dim=512,
-        enum_fields=observation_fields,
-        xy_player=[0,1],
-        xy_opponent=[32+0, 32+1],  # if you concatenate opponent obs (+32 shift)
-        use_pairwise=True,
-        ),
+            net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128])],
+            features_extractor_class=FusedFeatureExtractor,
+            features_extractor_kwargs=FUSED_EXTRACTOR_KW,
         )
+    
+    
 
     policy_partial_cpu = partial(
         CustomAgent,
@@ -507,10 +517,18 @@ if __name__ == "__main__":
     vn_path = os.path.join(EXP_ROOT, "vecnormalize.pkl")  # we’ll save to this name below
     if os.path.exists(vn_path):
         vec_env = VecNormalize.load(vn_path, mon_env)
-        vec_env.training = True   # important when resuming training
+        vec_env.training = True
         vec_env.norm_reward = True
+        vec_env.norm_obs = False   # fused extractor expects raw (unnormalized) obs
     else:
-        vec_env = VecNormalize(mon_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=sb3_kwargs["gamma"])
+            vec_env = VecNormalize(
+            mon_env,
+            norm_obs=False,          # <-- important with fused extractor
+            norm_reward=True,
+            clip_obs=10.0,
+            gamma=sb3_kwargs["gamma"],
+        )
+
 
 
     def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:

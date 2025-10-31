@@ -3,6 +3,8 @@ from torch import nn
 from gymnasium import spaces
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
+import math
+
 observation_fields={
                 # self
                 "s_state":  {"index": 8,   "n": 13, "dim": 16},
@@ -57,18 +59,21 @@ class ResMLPExtractor(BaseFeaturesExtractor):
         )
     
 # best_fused_extractor_flatbox.py
-# ------------------ core blocks ------------------
+# anchor: rmsnorm
+# rmsnorm with minimal alloc
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = torch.rsqrt(torch.clamp(x.pow(2).mean(dim=-1, keepdim=True), min=self.eps))
-        return self.weight * (x * rms)
+        # mean(x^2) along last dim, fused rsqrt, scale in-place where safe
+        rms_inv = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True).add(self.eps))
+        return self.weight * (x * rms_inv)
 
+# rezero block; init chosen to keep behavior
 class ReZeroBlock(nn.Module):
-    def __init__(self, dim: int, act=nn.SiLU()):
+    def __init__(self, dim: int, act=nn.SiLU(inplace=True)):
         super().__init__()
         self.norm = RMSNorm(dim)
         self.fc1  = nn.Linear(dim, dim)
@@ -85,17 +90,10 @@ class ReZeroBlock(nn.Module):
         h = self.fc2(h)
         return x + self.alpha * h
 
-# ------------------ extractor ------------------
-
 class FusedFeatureExtractor(BaseFeaturesExtractor):
     """
-    flat box obs. env stays unchanged.
-    features:
-      - bound-aware affine scaling for floats
-      - small learned embeddings for discrete fields (by hard-coded indices)
-      - optional engineered pair features (dx, dy, r2)
-      - rezero + rmsnorm residual mlp
-    note: assumes obs fed to policy are raw env values (not vecnormalized).
+    flat box obs with ego-flip, enum embeds, pairwise dx,dy,r2, rezero+rmsnorm trunk.
+    fast path: precomputed enum ranges, in-place flips, single concat.
     """
 
     def __init__(
@@ -103,12 +101,15 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
         observation_space: spaces.Box,
         features_dim: int = 256,
         hidden_dim: int = 512,
-        # enum_fields: dict[name] = dict(index=int, n=int, dim=int)
         enum_fields: dict | None = None,
-        # pairwise indices to add dx,dy,r2 if available
         xy_player: list[int] | tuple[int, int] | None = None,
         xy_opponent: list[int] | tuple[int, int] | None = None,
         use_pairwise: bool = True,
+        facing_index: int | None = 4,
+        flip_x_indices: list[int] | tuple[int, ...] | None = (0, 2, 32, 34),
+        flip_pair_dx: bool = True,
+        invert_facing: bool = False,
+        use_compile: bool = False,
     ):
         assert isinstance(observation_space, spaces.Box) and len(observation_space.shape) == 1
         super().__init__(observation_space, features_dim)
@@ -118,81 +119,130 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
         high = torch.as_tensor(observation_space.high, dtype=torch.float32)
         finite = torch.isfinite(low) & torch.isfinite(high)
 
-        # bound-aware center/scale for floats; 0 where inf
-        c = torch.where(finite, 0.5 * (high + low), torch.zeros_like(low))
-        m = torch.where(finite, 2.0 / (high - low).clamp(min=1e-6), torch.ones_like(low))
-        self.register_buffer("_center", c, persistent=False)
-        self.register_buffer("_mul",    m, persistent=False)
+        center = torch.where(finite, 0.5 * (high + low), torch.zeros_like(low))
+        mul    = torch.where(finite, 2.0 / (high - low).clamp(min=1e-6), torch.ones_like(low))
+        self.register_buffer("_center", center, persistent=False)
+        self.register_buffer("_mul",    mul,    persistent=False)
         self.D = D
 
-        # embeddings for integer-coded fields by index
-        self.enum_cfg = {}
+        # enum tables
+        self._enum_items: list[tuple[int, int, int, str]] = []
         self.embs = nn.ModuleDict()
-        in_extra = 0
         if enum_fields:
             for name, cfg in enum_fields.items():
                 idx = int(cfg["index"]); ncls = int(cfg["n"]); dim = int(cfg["dim"])
                 assert 0 <= idx < D and ncls >= 2 and dim >= 1
-                self.enum_cfg[name] = (idx, ncls, dim)
+                self._enum_items.append((idx, ncls, dim, name))
                 self.embs[name] = nn.Embedding(ncls, dim)
-                in_extra += dim
 
-        # optional engineered pairwise features
-        self.xy_p = torch.as_tensor(xy_player, dtype=torch.long) if xy_player is not None else None
-        self.xy_o = torch.as_tensor(xy_opponent, dtype=torch.long) if xy_opponent is not None else None
-        add_pair = int(use_pairwise and (self.xy_p is not None) and (self.xy_o is not None))
-        pair_extra = 3 if add_pair else 0  # dx, dy, r2
+        # anchor: enum_precompute_affine
+        if self._enum_items:
+            lows, highs, scales, biases = [], [], [], []
+            for (idx, ncls, _dim, _name) in self._enum_items:
+                inv_m = 1.0 / max(self._mul[idx].item(), 1e-6)
+                lo = float(self._center[idx].item() - inv_m)
+                hi = float(self._center[idx].item() + inv_m)
+                lows.append(lo); highs.append(hi)
+                rng = max(hi - lo, 1e-6)
+                s = (ncls - 1) / rng
+                b = -lo * s
+                scales.append(s); biases.append(b)
+            self.register_buffer("_enum_low",   torch.tensor(lows,   dtype=torch.float32), persistent=False)
+            self.register_buffer("_enum_high",  torch.tensor(highs,  dtype=torch.float32), persistent=False)
+            self.register_buffer("_enum_scale", torch.tensor(scales, dtype=torch.float32), persistent=False)
+            self.register_buffer("_enum_bias",  torch.tensor(biases, dtype=torch.float32), persistent=False)
+        else:
+            self.register_buffer("_enum_low",   torch.empty(0), persistent=False)
+            self.register_buffer("_enum_high",  torch.empty(0), persistent=False)
+            self.register_buffer("_enum_scale", torch.empty(0), persistent=False)
+            self.register_buffer("_enum_bias",  torch.empty(0), persistent=False)
+
+        # xy and flip config as buffers
+        self.register_buffer("xy_p",     torch.as_tensor(xy_player,   dtype=torch.long) if xy_player   is not None else torch.empty(0, dtype=torch.long), persistent=False)
+        self.register_buffer("xy_o",     torch.as_tensor(xy_opponent, dtype=torch.long) if xy_opponent is not None else torch.empty(0, dtype=torch.long), persistent=False)
+        self.register_buffer("flip_idx", torch.as_tensor(flip_x_indices, dtype=torch.long) if flip_x_indices else torch.empty(0, dtype=torch.long), persistent=False)
+
+        self._use_pair     = bool(use_pairwise and self.xy_p.numel() == 2 and self.xy_o.numel() == 2)
+        self.facing_index  = None if facing_index is None else int(facing_index)
+        self.flip_pair_dx  = bool(flip_pair_dx)
+        self.invert_facing = bool(invert_facing)
 
         # trunk
-        in_dim = D + in_extra + pair_extra
+        pair_extra = 3 if self._use_pair else 0
+        in_extra   = sum(dim for (_i, _n, dim, _name) in self._enum_items)
+        in_dim     = D + in_extra + pair_extra
+
         self.in_norm = RMSNorm(in_dim)
-        self.embed = nn.Linear(in_dim, hidden_dim)
-        self.block1 = ReZeroBlock(hidden_dim, act=nn.SiLU())
-        self.block2 = ReZeroBlock(hidden_dim, act=nn.SiLU())
-        self.head = nn.Linear(hidden_dim, features_dim)
+        self.embed   = nn.Linear(in_dim, hidden_dim)
+        self.block1  = ReZeroBlock(hidden_dim, act=nn.SiLU(inplace=True))
+        self.block2  = ReZeroBlock(hidden_dim, act=nn.SiLU(inplace=True))
+        self.head    = nn.Linear(hidden_dim, features_dim)
         nn.init.kaiming_uniform_(self.embed.weight, nonlinearity="relu")
         nn.init.zeros_(self.embed.bias)
         nn.init.orthogonal_(self.head.weight, gain=0.5)
         nn.init.zeros_(self.head.bias)
-        self.act = nn.SiLU()
+        self.act = nn.SiLU(inplace=True)
 
-    def _enum_ids_from_scalar(self, col: torch.Tensor, low: float, high: float, ncls: int) -> torch.Tensor:
-        # robust mapping: if finite bounds, assume linear map to [0..n-1]; else treat as raw ids
-        if torch.isfinite(torch.tensor(low)) and torch.isfinite(torch.tensor(high)) and (high > low):
-            t = (col - low) / max(high - low, 1e-6)
-            ids = torch.round(t * (ncls - 1)).to(torch.long)
-        else:
-            ids = torch.round(col).to(torch.long)
-        return ids.clamp_(0, ncls - 1)
+        if use_compile and hasattr(torch, "compile"):
+            self.forward = torch.compile(self.forward, mode="reduce-overhead", fullgraph=False)  # type: ignore
 
-    def _gather_enum_embs(self, obs: torch.Tensor) -> torch.Tensor:
-        outs = []
-        for name, (idx, ncls, _dim) in self.enum_cfg.items():
-            col = obs[:, idx]
-            ids = self._enum_ids_from_scalar(col, float(self._center[idx] - 1.0 / max(self._mul[idx].item(), 1e-6)), 
-                                                  float(self._center[idx] + 1.0 / max(self._mul[idx].item(), 1e-6)), ncls)
-            outs.append(self.embs[name](ids))
-        return torch.cat(outs, dim=-1) if outs else obs.new_zeros((obs.shape[0], 0))
 
-    def _pair_features(self, obs: torch.Tensor) -> torch.Tensor:
-        if (self.xy_p is None) or (self.xy_o is None):
+    # map scalar -> class id using cached lows/highs; single pass loop   
+    def _enum_embs(self, obs: torch.Tensor) -> torch.Tensor:
+        if not self._enum_items:
+            return obs.new_zeros((obs.shape[0], 0))
+        with torch.no_grad():
+            ids_list = [
+                torch.round(obs[:, idx] * self._enum_scale[j] + self._enum_bias[j]) \
+                    .to(torch.long).clamp_(0, ncls - 1)
+                for j, (idx, ncls, _dim, _name) in enumerate(self._enum_items)
+            ]
+        outs = [self.embs[name](ids) for (_idx, _ncls, _dim, name), ids in zip(self._enum_items, ids_list)]
+        return torch.cat(outs, dim=-1)
+
+    def _ego_sign(self, obs: torch.Tensor) -> torch.Tensor | None:
+        if self.facing_index is not None:
+            col = obs[:, self.facing_index]
+            if self.invert_facing:
+                col = -col
+            s = torch.where(col > 0.5, 1.0, -1.0)
+            return s.unsqueeze(-1)
+        if self.xy_p.numel() == 2 and self.xy_o.numel() == 2:
+            dx = obs[:, self.xy_p[0]] - obs[:, self.xy_o[0]]
+            s = torch.where(dx >= 0, 1.0, -1.0)
+            return s.unsqueeze(-1)
+        return None
+
+    def _pair_features(self, obs: torch.Tensor, sign: torch.Tensor | None) -> torch.Tensor:
+        if not self._use_pair:
             return obs.new_zeros((obs.shape[0], 0))
         p = obs[:, self.xy_p]  # [B,2]
         o = obs[:, self.xy_o]  # [B,2]
-        d = p - o              # dx,dy
-        r2 = (d * d).sum(-1, keepdim=True)
-        return torch.cat([d, r2], dim=-1)
+        d = p - o              # [B,2]
+        if sign is not None and self.flip_pair_dx:
+            d[:, 0].mul_(sign.squeeze(-1))  # in-place flip x component
+        r2 = d.mul(d).sum(-1, keepdim=True)
+        return torch.cat((d, r2), dim=-1)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        # scale floats to roughly [-1,1] where bounds are known
-        x = obs
-        if x.shape[-1] == self.D:
-            x = (x - self._center) * self._mul
+        # scale to ~[-1,1]
+        x = (obs - self._center) * self._mul
 
-        e = self._gather_enum_embs(obs)   # use raw obs for ids
-        p = self._pair_features(obs)      # use raw obs for geometry
-        if e.numel() or p.numel():
-            x = torch.cat([x, e, p], dim=-1)
+        # ego flip: in-place on selected columns
+        sign = self._ego_sign(obs)
+        if sign is not None and self.flip_idx.numel():
+            cols = self.flip_idx
+            x[:, cols] = x[:, cols] * sign
+
+        # engineered extras (single concat)
+        parts = [x]
+        e = self._enum_embs(obs)
+        if e.numel():
+            parts.append(e)
+        p = self._pair_features(obs, sign)
+        if p.numel():
+            parts.append(p)
+        x = torch.cat(parts, dim=-1)
 
         x = self.in_norm(x)
         x = self.act(self.embed(x))
