@@ -396,17 +396,17 @@ def gen_reward_manager(log_terms: bool=True):
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.7),
         'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*10),
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
-        'defence_reward': RewTerm(func=damage_interaction_reward, weight=0.77,
+        'defence_reward': RewTerm(func=damage_interaction_reward, weight=1.0,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=1.0,
                                            params={"y_thresh": 0.8, "pos_only": True}),
         'move_dir_reward': RewTerm(func=head_to_opponent, weight=5.0),
-        'move_towards_reward': RewTerm(func=head_to_opponent, weight=12.0, params={"threshold" : 0.55, "pos_only": True}),
+        'move_towards_reward': RewTerm(func=head_to_opponent, weight=10.0, params={"threshold" : 0.55, "pos_only": True}),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
-            weight=2.0,
+            weight=3.0,
             params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=1.25),
         ),
         'idle_penalty': RewTerm(func=idle_penalty, weight=2.5, params={'speed_thresh': 0.7, 'ema_tau': 0.35}),
@@ -414,14 +414,14 @@ def gen_reward_manager(log_terms: bool=True):
         # gentle edge avoidance (dt inside: small)
         'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
         'holding_more_than_3_keys': RewTerm(func=holding_nokeys_or_more_than_3keys_penalty, weight=7.0),
-        'taunt_reward': RewTerm(func=in_state_reward, weight=-2.0, params={'desired_state': TauntState}),
-        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-40.0, params={'pad': 1.0, 'only_bottom': False}),
+        'taunt_reward': RewTerm(func=in_state_reward, weight=-3.5, params={'desired_state': TauntState}),
+        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-50.0, params={'pad': 1.0, 'only_bottom': False}),
     }
     signal_subscriptions = {
-        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=20)),
-        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=25)),
+        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=100)),
+        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=75)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
-        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=12)),
-        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=14))
+        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=20)),
+        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=8))
     }
     return RewardManager(reward_functions, signal_subscriptions, log_terms=log_terms)
