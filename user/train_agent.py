@@ -333,15 +333,17 @@ class MLPExtractor(BaseFeaturesExtractor):
         )
 
 
+def _has_get_policy_kwargs(extractor_cls) -> bool:
+    return hasattr(extractor_cls, "get_policy_kwargs") and callable(getattr(extractor_cls, "get_policy_kwargs"))
+
+from user.custom_feature_extractor import _mirror_action
+
 class CustomAgent(Agent):
-    def __init__(
-        self,
-        sb3_class: Optional[Type[BaseAlgorithm]] = PPO,
-        file_path: Optional[str] = None,
-        extractor: Optional[Type[BaseFeaturesExtractor]] = None,  # pass the class (e.g., MLPExtractor)
-        sb3_kwargs: Optional[dict] = None,                        # new
-        policy_kwargs: Optional[dict] = None                      # new
-    ):
+    def __init__(self, sb3_class: Optional[Type[BaseAlgorithm]] = PPO,
+                 file_path: Optional[str] = None,
+                 extractor: Optional[Type[BaseFeaturesExtractor]] = None,
+                 sb3_kwargs: Optional[dict] = None,
+                 policy_kwargs: Optional[dict] = None):
         self.sb3_class = sb3_class
         self.extractor = extractor
         self.sb3_kwargs = sb3_kwargs or {}
@@ -350,27 +352,22 @@ class CustomAgent(Agent):
 
     def _initialize(self) -> None:
         if self.file_path is None:
-            # merge extractor-provided policy kwargs with user overrides
-            ek = self.extractor.get_policy_kwargs() if self.extractor else {}
+            ek = self.extractor.get_policy_kwargs() if (self.extractor and _has_get_policy_kwargs(self.extractor)) else {}
             pk = {**ek, **self.policy_kwargs}
-            self.model = self.sb3_class(
-                "MlpPolicy",
-                self.env,
-                policy_kwargs=pk,
-                **self.sb3_kwargs
-            )
+            self.model = self.sb3_class("MlpPolicy", self.env, policy_kwargs=pk, **self.sb3_kwargs)
             del self.env
         else:
-            # allow device override on load
             device = self.sb3_kwargs.get("device", "auto")
             self.model = self.sb3_class.load(self.file_path, device=device)
+
 
     def _gdown(self) -> Optional[str]:
         return
 
     def predict(self, obs):
+        sign = 1.0 if (obs.shape[0] > 4 and float(obs[4]) > 0.5) else -1.0
         action, _ = self.model.predict(obs)
-        return action
+        return _mirror_action(action, sign)
 
     def save(self, file_path: str) -> None:
         self.model.save(file_path, include=['num_timesteps'])
@@ -425,8 +422,22 @@ def make_env(i: int,
         )
         env.raw_env = PrevPosWrapper(env.raw_env)
         rm.subscribe_signals(env.raw_env)
-        return env
 
+        # mirror spec (fill indices to match your action layout; defaults are no-op)
+        swap_pairs   = []     # e.g. [(0,1)] if 0=left,1=right buttons
+        mirror_axes  = []     # e.g. [2] if axis 2 is horiz in [0,1]
+        mirror_angles= []     # e.g. [3] if 3 is aim angle in [0,1]
+
+        # train-time mirroring for the learner
+        env = ActionMirrorWrapper(
+            env,
+            facing_index=4,   # your facing bit (True=right, False=left)
+            px_index=0, ox_index=32,
+            swap_pairs=((1, 3),),  # A<->D
+            mirror_axes=(), mirror_angles=(),
+            invert_facing=False
+        )
+        return env
     return _init
 
 def _parse_args():
@@ -627,4 +638,12 @@ if __name__ == "__main__":
     # final save
     model.save(os.path.join(EXP_ROOT, "final_model"))
     model.get_vec_normalize_env().save(vn_path)
-    vec_env.close()
+    vec_env.close()# train-time mirroring for the learner
+        env = ActionMirrorWrapper(
+            env,
+            facing_index=4,   # your facing bit (True=right, False=left)
+            px_index=0, ox_index=32,
+            swap_pairs=((1, 3),),  # A<->D
+            mirror_axes=(), mirror_angles=(),
+            invert_facing=False
+        )

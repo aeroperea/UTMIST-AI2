@@ -250,3 +250,64 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
         x = self.block2(x)
         x = self.act(x)
         return self.head(x)
+
+import numpy as np
+import gymnasium as gym
+
+class ActionMirrorWrapper(gym.Wrapper):
+    def __init__(self, env,
+                 facing_index=4, px_index=0, ox_index=32,
+                 swap_pairs=((1, 3),),   # <-- left/right
+                 mirror_axes=(),         # none, actions are buttons
+                 mirror_angles=(),       # none, no analog aim angle here
+                 invert_facing=False):
+        super().__init__(env)
+        self.facing_index = facing_index
+        self.px_index = px_index
+        self.ox_index = ox_index
+        self.swap_pairs = tuple(swap_pairs)
+        self.mirror_axes = tuple(mirror_axes)
+        self.mirror_angles = tuple(mirror_angles)
+        self.invert_facing = bool(invert_facing)
+        self._last_obs = None
+
+    def reset(self, **kw):
+        obs, info = self.env.reset(**kw)
+        self._last_obs = obs
+        return obs, info
+
+    def _sign(self, obs: np.ndarray) -> float:
+        if self.facing_index is not None:
+            v = float(obs[self.facing_index])
+            if self.invert_facing:
+                v = -v
+            return 1.0 if v > 0.5 else -1.0
+        dx = float(obs[self.px_index] - obs[self.ox_index])
+        return 1.0 if dx >= 0.0 else -1.0
+
+    def _mirror(self, a: np.ndarray, sign: float) -> np.ndarray:
+        if sign >= 0.0:
+            return a
+        a = a.copy()
+        for i, j in self.swap_pairs:
+            a[i], a[j] = a[j], a[i]
+        for k in self.mirror_axes:
+            a[k] = 1.0 - float(a[k])
+        for k in self.mirror_angles:
+            a[k] = 1.0 - float(a[k])
+        return a
+
+    def step(self, action):
+        s = self._sign(self._last_obs) if self._last_obs is not None else 1.0
+        action = self._mirror(np.asarray(action, dtype=np.float32), s)
+        obs, r, t, tr, info = self.env.step(action)
+        self._last_obs = obs
+        return obs, r, t, tr, info
+
+def _mirror_action(a: np.ndarray, sign: float) -> np.ndarray:
+    if sign >= 0.0:
+        return a
+    a = a.copy()
+    i, j = 1, 3  # A<->D
+    a[i], a[j] = a[j], a[i]
+    return a
