@@ -407,7 +407,7 @@ def gen_reward_manager(log_terms: bool=True):
         'attack_quality': RewTerm(
             func=attack_quality_reward,
             weight=2.0,
-            params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=1.25),
+            params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=0.55),
         ),
         'idle_penalty': RewTerm(func=idle_penalty, weight=2.5, params={'speed_thresh': 0.7, 'ema_tau': 0.35}),
         # 'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
