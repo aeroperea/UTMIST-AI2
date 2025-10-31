@@ -117,6 +117,9 @@ class SubmittedAgent(Agent):
         if arr.ndim == 1:
             sign = 1.0 if (arr.shape[0] > 4 and float(arr[4]) > 0.5) else -1.0
             action, _ = self.model.predict(arr, deterministic=True)
+            for i in range(action.shape[0]):
+                print(action[i])
+
             return _mirror_action(action, sign)
         else:
             # batched
@@ -125,6 +128,8 @@ class SubmittedAgent(Agent):
             for i in range(B):
                 s = 1.0 if (arr[i].shape[0] > 4 and float(arr[i, 4]) > 0.5) else -1.0
                 actions[i] = _mirror_action(actions[i], s)
+                print(actions[i])
+            
             return actions
 
 
