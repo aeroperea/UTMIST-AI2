@@ -397,10 +397,10 @@ def make_env(i: int,
         import os, torch
         # headless + single-thread hints
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-        # os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        # torch.set_num_threads(1)
-        # os.environ.setdefault("OMP_NUM_THREADS", "1")
-        # os.environ.setdefault("MKL_NUM_THREADS", "1")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        torch.set_num_threads(1)
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        os.environ.setdefault("MKL_NUM_THREADS", "1")
 
         sp = DirSelfPlayRandom(policy_partial, ckpt_dir) if opponent_mode == "random" \
              else DirSelfPlayLatest(policy_partial, ckpt_dir)
@@ -490,7 +490,7 @@ if __name__ == "__main__":
         CustomAgent,
         sb3_class=PPO,
         extractor=FusedFeatureExtractor,
-        sb3_kwargs=dict(device="cuda"),
+        sb3_kwargs=dict(device="cpu"),
         policy_kwargs=policy_kwargs
     )
 
