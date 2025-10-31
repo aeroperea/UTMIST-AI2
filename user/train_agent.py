@@ -449,7 +449,7 @@ def _parse_args():
 if __name__ == "__main__":
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/FusedFeatureExtractor1"
+    EXP_ROOT = "checkpoints/FusedFeatureExtractor1" # todo: make this name prfix too
     os.makedirs(EXP_ROOT, exist_ok=True)
     
     args = _parse_args()
@@ -540,7 +540,7 @@ if __name__ == "__main__":
             gamma=sb3_kwargs["gamma"],
         )
 
-
+    name_prefix="FusedFeatureExtractor1"
 
     def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
         zips = glob.glob(os.path.join(ckpt_dir, f"{prefix}*.zip"))
@@ -556,7 +556,7 @@ if __name__ == "__main__":
     # resume model if there is a checkpoint, else start fresh
     load_checkpoint = True
     if load_checkpoint:
-        latest = _latest_ckpt(EXP_ROOT, "rl_model_")
+        latest = _latest_ckpt(EXP_ROOT, name_prefix)
     if load_checkpoint and latest is not None:
          # ---- PPO model ----
         model = PPO.load(latest, env=vec_env, device=sb3_kwargs["device"])
@@ -589,7 +589,7 @@ if __name__ == "__main__":
     ckpt_cb = CheckpointCallback(
         save_freq=max(1, target_save_every // n_envs),
         save_path=EXP_ROOT,
-        name_prefix="FusedFeatureExtractor1",
+        name_prefix=name_prefix,
         save_replay_buffer=False,
         save_vecnormalize=True,
         verbose=1
