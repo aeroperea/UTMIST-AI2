@@ -228,28 +228,28 @@ class FusedFeatureExtractor(BaseFeaturesExtractor):
         return torch.cat((d, r2), dim=-1)
 
     # anchor: forward_blocks
-def forward(self, obs: torch.Tensor) -> torch.Tensor:
-    x = (obs - self._center) * self._mul
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        x = (obs - self._center) * self._mul
 
-    sign = self._ego_sign(obs)
-    if sign is not None and self.flip_idx.numel():
-        x[:, self.flip_idx] = x[:, self.flip_idx] * sign
+        sign = self._ego_sign(obs)
+        if sign is not None and self.flip_idx.numel():
+            x[:, self.flip_idx] = x[:, self.flip_idx] * sign
 
-    parts = [x]
-    e = self._enum_embs(obs)
-    if e.numel():
-        parts.append(e)
-    p = self._pair_features(obs, sign)
-    if p.numel():
-        parts.append(p)
-    x = torch.cat(parts, dim=-1)
+        parts = [x]
+        e = self._enum_embs(obs)
+        if e.numel():
+            parts.append(e)
+        p = self._pair_features(obs, sign)
+        if p.numel():
+            parts.append(p)
+        x = torch.cat(parts, dim=-1)
 
-    x = self.in_norm(x)
-    x = self.act(self.embed(x))
-    for b in self.blocks:
-        x = b(x)
-    x = self.act(x)
-    return self.head(x)
+        x = self.in_norm(x)
+        x = self.act(self.embed(x))
+        for b in self.blocks:
+            x = b(x)
+        x = self.act(x)
+        return self.head(x)
 
 
 import numpy as np
