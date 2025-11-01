@@ -448,7 +448,7 @@ def _parse_args():
 
 if __name__ == "__main__":
 
-    name_prefix="FusedFeatureExtractor6N(DeeperStill)"
+    name_prefix="FusedFeatureExtractor7N(DeeperStill)"
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
     EXP_ROOT = f'checkpoints/{name_prefix}'
@@ -501,13 +501,13 @@ if __name__ == "__main__":
         flip_pair_dx=True,
         invert_facing=False,
         use_compile=False,
-        n_blocks=6  # <--- set 4 first; try 6 if value underfits
+        n_blocks=7  # <--- set 4 first; try 6 if value underfits
     )
 
 
     policy_kwargs = dict(
         activation_fn=nn.SiLU,
-            net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128])],
+            net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128, 128])],
             features_extractor_class=FusedFeatureExtractor,
             features_extractor_kwargs=FUSED_EXTRACTOR_KW,
         )
