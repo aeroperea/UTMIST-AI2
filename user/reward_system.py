@@ -1,5 +1,5 @@
-import numpy as np
-from typing import Optional, Type, List, Tuple
+from typing import Type, Tuple
+
 #
 from environment.agent import *
 from user.reward_fastpath import ctx_or_compute
@@ -77,6 +77,31 @@ def damage_interaction_reward(
     return reward / 140
 
 
+
+def _update_spam_tracker(p_obj: Any,
+                         cur_attack_idx: int,
+                         window_frames: int = 5,
+                         inc: float = 1.0,
+                         decay_per_step: float = 0.15) -> float:
+    # persistent fields on the player object
+    last_idx = int(getattr(p_obj, "_rw_last_attack_idx", -1))
+    frames_since = int(getattr(p_obj, "_rw_frames_since_switch", 9999))
+    score = float(getattr(p_obj, "_rw_spam_score", 0.0))
+
+    switched = (cur_attack_idx >= 0 and last_idx >= 0 and cur_attack_idx != last_idx)
+    if switched:
+        if frames_since <= window_frames:
+            score += inc
+        frames_since = 0
+    else:
+        frames_since = min(frames_since + 1, 10_000)
+        score = max(0.0, score - decay_per_step)
+
+    setattr(p_obj, "_rw_last_attack_idx", cur_attack_idx)
+    setattr(p_obj, "_rw_frames_since_switch", frames_since)
+    setattr(p_obj, "_rw_spam_score", score)
+    return score
+
 def danger_zone_reward(
     env: WarehouseBrawl,
     zone_penalty: int = 1,
@@ -118,46 +143,39 @@ def _nearest_platform_surface(env, px: float, py: float, x_pad: float):
             best = (surface_y, bb.left, bb.right, pvx, pvy)
     return best  # or None
 
+# anchor: platform_soft_approach_ctx
 def platform_soft_approach(env,
                            x_pad: float = 0.4,
                            y_window: float = 2.5,
                            vy_cap: float = 6.0,
                            reward_scale: float = 0.02) -> float:
-    """
-    reward clean approaches to a platform: horizontally aligned, descending toward the surface,
-    stronger when time-to-contact is small but not zero. no penalties for air whiffs.
-    """
+    ctx = ctx_or_compute(env)
     p = env.objects["player"]
-    px, py = float(p.body.position.x), float(p.body.position.y)
-    vx, vy = float(p.body.velocity.x), float(p.body.velocity.y)
 
-    # already grounded or riding a platform? no shaping needed
-    if getattr(p, "on_platform", None) is not None or p.is_on_floor():
+    is_on_floor = getattr(p, "is_on_floor", None)
+    if bool(getattr(p, "on_platform", False)) or (callable(is_on_floor) and is_on_floor()):
+        return 0.0
+    if not getattr(ctx, "pf_found", False):
         return 0.0
 
-    surf = _nearest_platform_surface(env, px, py, x_pad)
-    if surf is None:
-        return 0.0
-
-    surface_y, left, right, pvx, pvy = surf
-
-    # relative vertical velocity (y+ is down in your codebase)
-    vrel_y = max(0.0, vy - float(pvy))  # only reward if descending relative to platform
-    dy = surface_y - py                  # > 0 only if surface is below the player
+    surface_y = float(ctx.pf_y)
+    vy = float(ctx.pvy); pvy = float(ctx.pf_vy)
+    vrel_y = max(0.0, vy - pvy)
+    dy = surface_y - float(ctx.py)
 
     if dy <= 0.0 or vrel_y <= 1e-5:
         return 0.0
 
-    # distance and speed weights (smooth, bounded)
-    w_dist = max(0.0, 1.0 - (dy / y_window))          # near surface -> stronger
-    w_speed = min(1.0, vrel_y / vy_cap)               # reasonable fall speed cap
-    # softly prefer being near platform center
-    cx = 0.5 * (left + right)
-    halfw = max(1e-3, 0.5 * (right - left))
-    w_center = max(0.0, 1.0 - abs(px - cx) / halfw)
+    w_dist = max(0.0, 1.0 - (dy / y_window))
+    w_speed = min(1.0, vrel_y / max(1e-6, vy_cap))
+
+    cx = 0.5 * (float(ctx.pf_left) + float(ctx.pf_right))
+    halfw = max(1e-3, 0.5 * (float(ctx.pf_right) - float(ctx.pf_left)))
+    w_center = max(0.0, 1.0 - abs(float(ctx.px) - cx) / halfw)
 
     r = reward_scale * w_dist * w_speed * (0.5 + 0.5 * w_center)
-    return r * env.dt
+    return r * ctx.dt
+
 
 def get_ko_bounds(env) -> Tuple[float, float]:
     """exactly match the KO check in PlayerObjectState.physics_process (uses // 2)"""
@@ -282,16 +300,27 @@ def head_to_middle_reward(
     x_curr = p.body.position.x
     return abs(x_prev) - abs(x_curr)
 
+# anchor: platform_aware_approach_ctx
 def platform_aware_approach(env: WarehouseBrawl, y_thresh: float = 0.8, pos_only: bool = True) -> float:
     ctx = ctx_or_compute(env)
+
     dx0 = abs(ctx.ppx - ctx.opx); dy0 = abs(ctx.ppy - ctx.opy)
     dx1 = abs(ctx.px  - ctx.ox ); dy1 = abs(ctx.py  - ctx.oy )
     delta = (dy0 - dy1) if (dy0 > y_thresh or dy1 > y_thresh) else (dx0 - dx1)
     if pos_only and delta < 0.0:
         return 0.0
-    return delta * ctx.dt
 
-def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.2, pos_only: bool = False) -> float:
+    jbo_rew = 0.0
+    if getattr(ctx, "pf_found", False):
+        pf_h = float(ctx.pf_y)
+        # crossing the platform plane (top) this frame
+        if ctx.ppy < pf_h <= ctx.py:
+            jbo_rew = 1.0
+
+    return (delta * ctx.dt) + jbo_rew
+
+
+def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.0, pos_only: bool = False) -> float:
     ctx = ctx_or_compute(env)
     r2 = threshold * threshold
     vp = max(0.0, (ctx.ppx-ctx.opx)**2 + (ctx.ppy-ctx.opy)**2 - r2)
@@ -302,9 +331,9 @@ def head_to_opponent(env: WarehouseBrawl, threshold: float = 1.2, pos_only: bool
     return delta * ctx.dt
 
 def holding_nokeys_or_more_than_3keys_penalty(env: WarehouseBrawl) -> float:
-    a = env.objects["player"].cur_action
-    keysHeld = (a > 0.5).sum()
-    return -env.dt if keysHeld > 3 or keysHeld == 0 else env.dt
+    ctx = ctx_or_compute(env)
+    keys_held = sum(1 for v in ctx.p_act if float(v) > 0.5)
+    return (-ctx.dt) if (keys_held > 3 or keys_held == 0) else (ctx.dt)
 
 def on_win_reward(env: WarehouseBrawl, agent: str) -> float:
     if agent == 'player':
@@ -336,7 +365,77 @@ def on_combo_reward(env: WarehouseBrawl, agent: str) -> float:
     # reward combos for the player; penalize if opponent combos
     return 1.0 if agent == 'player' else -1.0
 
-def fell_off_map_event(env, pad: float = 0.0, only_bottom: bool = False) -> float:
+def spam_penalty(env: WarehouseBrawl,
+                 window_frames: int = 5,
+                 inc: float = 1.0,
+                 decay_per_step: float = 0.15,
+                 scale: float = 1.0) -> float:
+    ctx = ctx_or_compute(env)
+    p = env.objects["player"]
+    cur_idx = int(getattr(ctx, "p_attack_idx", -1))
+    score = _update_spam_tracker(p, cur_idx,
+                                 window_frames=window_frames,
+                                 inc=inc,
+                                 decay_per_step=decay_per_step)
+    return -scale * score * ctx.dt
+
+
+
+def weapon_distance_reward(env: WarehouseBrawl) -> float:
+    ctx = ctx_or_compute(env)
+    d2 = float(getattr(ctx, "w_dist2", float("inf")))
+    if math.isfinite(d2):
+        return -d2 * ctx.dt
+    return 0.0
+
+def throw_quality_reward(env: WarehouseBrawl) -> float:
+    ctx = ctx_or_compute(env)
+    p = env.objects["player"]
+
+    # Determine whether the player is performing a throw-like action.
+    # The fast-path context does not expose `p_throwing`, so infer it:
+    # 1) Prefer an explicit method/flag on the player if available (e.g., is_throwing())
+    # 2) Otherwise, infer from input handler (historically key 'h' used for pickup/throw)
+    # 3) Fallback: when no signal exists, gate by generic attacking to avoid constant firing
+    p_throwing = False
+    is_throwing_attr = getattr(p, "is_throwing", None)
+    if callable(is_throwing_attr):
+        try:
+            p_throwing = bool(is_throwing_attr())
+        except Exception:
+            p_throwing = False
+    if not p_throwing:
+        inp = getattr(p, "input", None)
+        try:
+            if inp is not None and hasattr(inp, "key_status") and 'h' in inp.key_status:
+                ks = inp.key_status['h']
+                # treat either held or just_pressed as a throw-like event
+                p_throwing = bool(getattr(ks, 'held', False) or getattr(ks, 'just_pressed', False))
+        except Exception:
+            p_throwing = False
+    if not p_throwing:
+        # graceful fallback: only evaluate when attacking at all
+        p_throwing = bool(getattr(ctx, 'p_attacking', False))
+
+    if not p_throwing:
+        return 0.0
+
+    # Check if player is facing opponent
+    sdx = _sign(ctx.dx)
+    if sdx == 0.0:
+        # If overlapping, use previous positions
+        sdx = _sign(ctx.ppx - ctx.opx)
+
+    desired = -sdx if sdx != 0.0 else ctx.p_face
+    align = 0.5 * (1.0 + desired * ctx.p_face)  # 0..1
+
+    # Reward if facing opponent (align > 0.5), penalize if not
+    reward = 1.0 if align > 0.5 else -0.5
+
+    return reward * ctx.dt
+
+
+def fell_off_map_event(env, pad: float = 0.0, only_bottom: bool = False, attack_pen: float = 0.5) -> float:
     """
     returns 1.0 exactly once when the player crosses the KO boundary.
     - pad > 0 shrinks the safe area slightly (fires earlier)
@@ -344,6 +443,9 @@ def fell_off_map_event(env, pad: float = 0.0, only_bottom: bool = False) -> floa
     """
     ctx = ctx_or_compute(env)
     p = env.objects["player"]
+    added_pen = 0
+    if ctx.p_attacking:
+        added_pen += attack_pen
 
     if only_bottom:
         outside = (ctx.py > (ctx.half_h - pad))
@@ -354,7 +456,7 @@ def fell_off_map_event(env, pad: float = 0.0, only_bottom: bool = False) -> floa
     fire = outside and not was_outside
     setattr(p, "_rw_was_outside", outside)
 
-    return 1.0 if fire else 0.0
+    return 1.0 + added_pen if fire else 0.0
 
 def idle_penalty(
     env: WarehouseBrawl,
@@ -393,13 +495,13 @@ Add your dictionary of RewardFunctions here using RewTerms
 def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
-        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.7),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*10),
+        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=1.0),
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*6.7),
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
-        'defence_reward': RewTerm(func=damage_interaction_reward, weight=1.0,
+        'defence_reward': RewTerm(func=damage_interaction_reward, weight=4.0,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=1.0,
+        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=7.5,
                                            params={"y_thresh": 0.8, "pos_only": True}),
         'move_dir_reward': RewTerm(func=head_to_opponent, weight=5.0),
         'move_towards_reward': RewTerm(func=head_to_opponent, weight=10.0, params={"threshold" : 0.55, "pos_only": True}),
@@ -409,19 +511,29 @@ def gen_reward_manager(log_terms: bool=True):
             weight=3.0,
             params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=1.25),
         ),
-        'idle_penalty': RewTerm(func=idle_penalty, weight=2.5, params={'speed_thresh': 0.7, 'ema_tau': 0.35}),
+        'idle_penalty': RewTerm(func=idle_penalty, weight=5.0, params={'speed_thresh': 0.7, 'ema_tau': 0.35}),
         # 'attack_misalign': RewTerm(func=attack_misalignment_penalty, weight=2.0),
         # gentle edge avoidance (dt inside: small)
-        'edge_safety':             RewTerm(func=edge_safety, weight=0.044),
+        'edge_safety':             RewTerm(func=edge_safety, weight=0.77),
         'holding_more_than_3_keys': RewTerm(func=holding_nokeys_or_more_than_3keys_penalty, weight=7.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-3.5, params={'desired_state': TauntState}),
-        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-50.0, params={'pad': 1.0, 'only_bottom': False}),
+        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-100.0, params={'pad': 1.0, 'only_bottom': False}),
+        'throw_quality': RewTerm(func=throw_quality_reward, weight=11.0),
+        'weapon_distance': RewTerm(func=weapon_distance_reward, weight=4.0),
+
+        'spam_penalty': RewTerm(
+            func=spam_penalty,
+            weight=10.0,
+            # you can tune these if needed:
+            params={'window_frames': 5, 'inc': 1.0, 'decay_per_step': 0.15, 'scale': 1.0}
+        ),
+
     }
     signal_subscriptions = {
-        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=100)),
+        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
         'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=75)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
         'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=20)),
-        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=8))
+        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=25))
     }
     return RewardManager(reward_functions, signal_subscriptions, log_terms=log_terms)
