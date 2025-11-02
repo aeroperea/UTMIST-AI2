@@ -1,77 +1,42 @@
-import os as _os
-HEADLESS = (_os.getenv("TRAIN_MODE", "0") == "1") or (_os.getenv("HEADLESS", "0") == "1")
-if HEADLESS:
-    _os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-# keep the same public api import from environment; environment itself gates heavy libs
-from environment.environment import (
-    ActHelper, AirTurnaroundState, Animation, AnimationSprite2D, AttackState, BackDashState,
-    Camera, CameraResolution, Capsule, CapsuleCollider, Cast, CastFrameChangeHolder,
-    CasterPositionChange, CasterVelocityDampXY, CasterVelocitySet, CasterVelocitySetXY,
-    CompactMoveState, DashState, DealtPositionTarget, DodgeState, Facing, GameObject, Ground,
-    GroundState, HurtboxPositionChange, InAirState, KOState, KeyIconPanel, KeyStatus, MalachiteEnv,
-    MatchStats, MoveManager, MoveType, ObsHelper, Particle, Player, PlayerInputHandler,
-    PlayerObjectState, PlayerStats, Power, RenderMode, Result, Signal, SprintingState, Stage,
-    StandingState, StunState, Target, TauntState, TurnaroundState, UIHandler, WalkingState,
-    WarehouseBrawl, hex_to_rgb
-)
+from environment.environment import ActHelper, AirTurnaroundState, Animation, AnimationSprite2D, AttackState, BackDashState, Camera, CameraResolution, Capsule, CapsuleCollider, Cast, CastFrameChangeHolder, CasterPositionChange, CasterVelocityDampXY, CasterVelocitySet, CasterVelocitySetXY, CompactMoveState, DashState, DealtPositionTarget, DodgeState, Facing, GameObject, Ground, GroundState, HurtboxPositionChange, InAirState, KOState, KeyIconPanel, KeyStatus, MalachiteEnv, MatchStats, MoveManager, MoveType, ObsHelper, Particle, Player, PlayerInputHandler, PlayerObjectState, PlayerStats, Power, RenderMode, Result, Signal, SprintingState, Stage, StandingState, StunState, Target, TauntState, TurnaroundState, UIHandler, WalkingState, WarehouseBrawl, hex_to_rgb
 
 import warnings
-from typing import TYPE_CHECKING, Any, Generic, SupportsFloat, TypeVar, Type, Optional, List, Dict, Callable, Tuple
+from typing import TYPE_CHECKING, Any, Generic, \
+ SupportsFloat, TypeVar, Type, Optional, List, Dict, Callable
 from enum import Enum, auto
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, MISSING
 from collections import defaultdict
 from functools import partial
+from typing import Tuple, Any
+
+from PIL import Image, ImageSequence
+import matplotlib.pyplot as plt
 
 import gdown, os, math, random, shutil, json
+
 import numpy as np
 import torch
 from torch import nn
+
 import gymnasium
 from gymnasium import spaces
+
+import pygame
+import pygame.gfxdraw
 import pymunk
+import pymunk.pygame_util
+from pymunk.space_debug_draw_options import SpaceDebugColor
+from pymunk.vec2d import Vec2d
 
-# heavy viz/io — only import when not headless; else define names as None to keep references valid
-try:
-    if not HEADLESS:
-        from PIL import Image, ImageSequence
-        import matplotlib.pyplot as plt
-    else:
-        raise ImportError("headless")
-except Exception:
-    Image = None
-    ImageSequence = None
-    plt = None
-
-try:
-    if not HEADLESS:
-        import pygame
-        from pygame.locals import QUIT
-        import pygame.gfxdraw
-    else:
-        raise ImportError("headless")
-except Exception:
-    pygame = None
-    QUIT = None
-
-try:
-    if not HEADLESS:
-        import cv2
-        import skimage.transform as st
-        import skvideo, skvideo.io
-        from IPython.display import Video
-    else:
-        raise ImportError("headless")
-except Exception:
-    cv2 = None
-    st = None
-    skvideo = None
-    Video = None
+import cv2
+import skimage.transform as st
+import skvideo
+import skvideo.io
+from IPython.display import Video
 
 from stable_baselines3.common.monitor import Monitor
+
 
 # ## Agents
 
@@ -228,61 +193,55 @@ class RewTerm():
 
 
 class RewardManager():
-    def __init__(self, reward_functions=None, signal_subscriptions=None, log_terms: bool = True) -> None:
+    """Reward terms for the MDP."""
+
+    # (1) Constant running reward
+    def __init__(self,
+                 reward_functions: Optional[Dict[str, RewTerm]]=None,
+                 signal_subscriptions: Optional[Dict[str, Tuple[str, RewTerm]]]=None) -> None:
         self.reward_functions = reward_functions
         self.signal_subscriptions = signal_subscriptions
         self.total_reward = 0.0
         self.collected_signal_rewards = 0.0
-        self.log_terms = log_terms
-        if self.log_terms:
-            self.last_terms: dict[str, float] = {}
-            self.last_signals: float = 0.0
 
     def subscribe_signals(self, env) -> None:
-        if not self.signal_subscriptions:
+        if self.signal_subscriptions is None:
             return
         for _, (name, term_cfg) in self.signal_subscriptions.items():
-            # bind once; no partial allocation inside the hot path
-            def _cb(*args, _tc=term_cfg, **kwargs):
-                v = _tc.func(*args, **_tc.params, **kwargs)
-                self.collected_signal_rewards += v * _tc.weight
-            getattr(env, name).connect(_cb)
+            getattr(env, name).connect(partial(self._signal_func, term_cfg))
+
+    def _signal_func(self, term_cfg: RewTerm, *args, **kwargs):
+        term_partial = partial(term_cfg.func, **term_cfg.params)
+        self.collected_signal_rewards += term_partial(*args, **kwargs) * term_cfg.weight
 
     def process(self, env, dt) -> float:
+        # reset computation
         reward_buffer = 0.0
-        terms_log = {} if self.log_terms else None
-        if self.reward_functions:
+        # iterate over all the reward terms
+        if self.reward_functions is not None:
             for name, term_cfg in self.reward_functions.items():
+                # skip if weight is zero (kind of a micro-optimization)
                 if term_cfg.weight == 0.0:
                     continue
+                # compute term's value
                 value = term_cfg.func(env, **term_cfg.params) * term_cfg.weight
+                # update total reward
                 reward_buffer += value
-                if terms_log is not None:
-                    terms_log[name] = value
 
         reward = reward_buffer + self.collected_signal_rewards
-        if self.log_terms:
-            self.last_terms = terms_log
-            self.last_signals = float(self.collected_signal_rewards)
-
         self.collected_signal_rewards = 0.0
+
         self.total_reward += reward
 
-        if self.log_terms:
-            # avoid string formatting if no logger
-            if hasattr(env, "logger"):
-                log = env.logger[0]
-                log["reward"] = f"{float(reward_buffer):.3f}"
-                log["total_reward"] = f"{float(self.total_reward):.3f}"
-                env.logger[0] = log
+        log = env.logger[0]
+        log['reward'] = f'{reward_buffer:.3f}'
+        log['total_reward'] = f'{self.total_reward:.3f}'
+        env.logger[0] = log
         return reward
 
     def reset(self):
-        self.total_reward = 0.0
-        self.collected_signal_rewards = 0.0
-        if self.log_terms:
-            self.last_terms = {}
-            self.last_signals = 0.0
+        self.total_reward = 0
+        self.collected_signal_rewards
 
 
 # ### Save, Self-play, and Opponents
@@ -422,7 +381,7 @@ class SelfPlayHandler(ABC):
 
     def __init__(self, agent_partial: partial):
         self.agent_partial = agent_partial
-    
+
     def get_model_from_path(self, path) -> Agent:
         if path:
             try:
@@ -443,7 +402,7 @@ class SelfPlayHandler(ABC):
 class SelfPlayLatest(SelfPlayHandler):
     def __init__(self, agent_partial: partial):
         super().__init__(agent_partial)
-    
+
     def get_opponent(self) -> Agent:
         assert self.save_handler is not None, "Save handler must be specified for self-play"
         chosen_path = self.save_handler.get_latest_model_path()
@@ -452,50 +411,11 @@ class SelfPlayLatest(SelfPlayHandler):
 class SelfPlayRandom(SelfPlayHandler):
     def __init__(self, agent_partial: partial):
         super().__init__(agent_partial)
-    
+
     def get_opponent(self) -> Agent:
         assert self.save_handler is not None, "Save handler must be specified for self-play"
         chosen_path = self.save_handler.get_random_model_path()
         return self.get_model_from_path(chosen_path)
-    
-
-# simple directory-backed self-play handlers (avoid passing SaveHandler into subprocesses)
-class DirSelfPlayLatest(SelfPlayHandler):
-    def __init__(self, agent_partial: partial, ckpt_dir: str):
-        super().__init__(agent_partial)
-        self.ckpt_dir = ckpt_dir
-        self._cache = []
-        self._last_count = -1
-    def _refresh(self):
-        files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
-        if len(files) != self._last_count:
-            self._cache = sorted(files, key=lambda f: int(f.split("_")[-2]))
-            self._last_count = len(files)
-    def get_opponent(self) -> Agent:
-        self._refresh()
-        chosen = self._cache[-1] if self._cache else None
-        path = os.path.join(self.ckpt_dir, chosen) if chosen else None
-        return self.get_model_from_path(path)
-
-class DirSelfPlayRandom(SelfPlayHandler):
-    def __init__(self, agent_partial: partial, ckpt_dir: str):
-        super().__init__(agent_partial)
-        self.ckpt_dir = ckpt_dir
-        self._cache = []
-        self._last_count = -1
-        self._model_cache = {}  # simple per-worker cac
-    def _refresh(self):
-        files = [f for f in os.listdir(self.ckpt_dir) if f.endswith(".zip")]
-        if len(files) != self._last_count:
-            self._files = files
-            self._last_count = len(files)
-    def get_opponent(self) -> Agent:
-        self._refresh()
-        chosen = random.choice(self._files) if self._files else None
-        path = os.path.join(self.ckpt_dir, chosen) if chosen else None
-        if path not in self._model_cache:
-            self._model_cache[path] = self.get_model_from_path(path)
-        return self._model_cache[path]
 
 @dataclass
 class OpponentsCfg():
@@ -533,7 +453,7 @@ class OpponentsCfg():
         )[0]
 
         # If self-play is selected, return the trained model
-        #print(f'Selected {agent_name}')
+        print(f'Selected {agent_name}')
         if agent_name == "self_play":
             selfplay_handler: SelfPlayHandler = self.opponents[agent_name][1]
             return selfplay_handler.get_opponent()
@@ -560,48 +480,49 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
                  opponent_cfg: OpponentsCfg=OpponentsCfg(),
                  save_handler: Optional[SaveHandler]=None,
                  render_every: int | None = None,
-                 resolution: CameraResolution=CameraResolution.LOW, 
-                 train_mode=True, mode: RenderMode=RenderMode.RGB_ARRAY):
+                 resolution: CameraResolution=CameraResolution.LOW):
         """
         Initializes the environment.
 
         Args:
             reward_manager (Optional[RewardManager]): Reward manager.
             opponent_cfg (OpponentCfg): Configuration for opponents.
-            save_handler (SaveHandler | None): set only when training from a single process that writes checkpoints.
+            save_handler (SaveHandler): Configuration for self-play.
             render_every (int | None): Number of steps between a demo render (None if no rendering).
         """
         super().__init__()
 
-        self.train_mode = train_mode
         self.reward_manager = reward_manager
         self.save_handler = save_handler
         self.opponent_cfg = opponent_cfg
         self.render_every = render_every
         self.resolution = resolution
-        self.mode = mode
 
         self.games_done = 0
 
-        # give OpponentCfg references, and normalize probabilities
+
+        # Give OpponentCfg references, and normalize probabilities
         self.opponent_cfg.env = self
         self.opponent_cfg.validate_probabilities()
 
-        # wire up self-play handlers without forcing a save_handler
-        for _, (prob, handler) in self.opponent_cfg.opponents.items():
-            if isinstance(handler, SelfPlayHandler):
-                handler.env = self
-                if self.save_handler is not None:
-                    handler.save_handler = self.save_handler
+        # Check if using self-play
+        for key, value in self.opponent_cfg.opponents.items():
+            if isinstance(value[1], SelfPlayHandler):
+                assert self.save_handler is not None, "Save handler must be specified for self-play"
 
-        self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=True, mode=mode)
+                # Give SelfPlayHandler references
+                selfplay_handler: SelfPlayHandler = value[1]
+                selfplay_handler.save_handler = self.save_handler
+                selfplay_handler.env = self
+
+        self.raw_env = WarehouseBrawl(resolution=resolution, train_mode=True)
         self.action_space = self.raw_env.action_space
         self.act_helper = self.raw_env.act_helper
         self.observation_space = self.raw_env.observation_space
         self.obs_helper = self.raw_env.obs_helper
 
     def on_training_start(self):
-        # update SaveHandler if present
+        # Update SaveHandler
         if self.save_handler is not None:
             self.save_handler.update_info()
 
@@ -611,58 +532,42 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
             self.save_handler.save_agent()
 
     def step(self, action):
-        # opponent acts on last obs
-        opp_action = self.opponent_agent.predict(self.opponent_obs)
 
-        observations, rewards, terminated, truncated, info = self.raw_env.step({0: action, 1: opp_action})
+        full_action = {
+            0: action,
+            1: self.opponent_agent.predict(self.opponent_obs),
+        }
 
-        # keep opponent in sync for the next call
+        observations, rewards, terminated, truncated, info = self.raw_env.step(full_action)
         self.opponent_obs = observations[1]
 
         if self.save_handler is not None:
             self.save_handler.process()
 
-        # prefer env.dt, fall back to fps
-        dt = getattr(self.raw_env, "dt", 1.0 / getattr(self.raw_env, "fps", 30.0))
-        reward = rewards[0] if self.reward_manager is None else self.reward_manager.process(self.raw_env, dt)
+        if self.reward_manager is None:
+            reward = rewards[0]
+        else:
+            reward = self.reward_manager.process(self.raw_env, 1 / 30.0)
 
-        # return a single info dict for player 0 and attach reward breakdown if present
-        info0 = info[0] if isinstance(info, (list, tuple)) else info
-        if hasattr(self.reward_manager, "last_terms"):
-            info0 = dict(info0)
-            info0["rew_terms"] = dict(self.reward_manager.last_terms)
-            info0["rew_signals"] = float(self.reward_manager.last_signals)
-
-        # optional: prime recurrent opponents for next episode
-        if bool(terminated) or bool(truncated):
-            if hasattr(self.opponent_agent, "reset"):
-                self.opponent_agent.reset()
-
-        return observations[0], reward, terminated, truncated, info0
+        return observations[0], reward, terminated, truncated, info
 
     def reset(self, seed=None, options=None):
-        observations, info = self.raw_env.reset(seed=seed)
+        # Reset MalachiteEnv
+        observations, info = self.raw_env.reset()
 
-        if self.reward_manager is not None:
-            self.reward_manager.reset()
+        self.reward_manager.reset()
 
-        # select agent
+        # Select agent
         new_agent: Agent = self.opponent_cfg.on_env_reset()
         if new_agent is not None:
-            self.opponent_agent = new_agent
-
-        # make sure opponent has env bindings
-        if not getattr(self.opponent_agent, "initialized", False):
-            self.opponent_agent.get_env_info(self.raw_env)
-
-        # important for recurrent opponents: clear lstm/episode flags
-        # (RecurrentPPOAgent.reset() sets episode_starts=True)
-        if hasattr(self.opponent_agent, "reset"):
-            self.opponent_agent.reset()
-
+            self.opponent_agent: Agent = new_agent
         self.opponent_obs = observations[1]
 
+
         self.games_done += 1
+        #if self.games_done % self.render_every == 0:
+            #self.render_out_video()
+
         return observations[0], info
 
     def render(self):
@@ -671,7 +576,6 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
 
     def close(self):
         pass
-
 
 
 # ## Run Match
@@ -734,6 +638,15 @@ def run_match(agent_1: Agent | partial,
 
     # Initialize agents
     if not agent_1.initialized: agent_1.get_env_info(env)
+
+    # rl_model_path = "rl-model.zip"
+    # if os.path.exists(rl_model_path):
+    #     try:
+    #         os.remove(rl_model_path)
+    #         print(f"Removed {rl_model_path}")
+    #     except Exception as e:
+    #         print(f"Warning: Could not remove {rl_model_path}: {e}")
+
     if not agent_2.initialized: agent_2.get_env_info(env)
     # 596, 336
     platform1 = env.objects["platform1"]
@@ -756,7 +669,7 @@ def run_match(agent_1: Agent | partial,
             img = env.render()
             img = np.rot90(img, k=-1)  #video output rotate fix
             img = np.fliplr(img)  # Mirror/flip the image horizontally
-            writer.writeFrame(img) 
+            writer.writeFrame(img)
             del img
 
       if terminated or truncated:
@@ -778,7 +691,7 @@ def run_match(agent_1: Agent | partial,
         result = Result.LOSS
     else:
         result = Result.DRAW
-    
+
     match_stats = MatchStats(
         match_time=env.steps / env.fps,
         player1=player_1_stats,
@@ -801,7 +714,8 @@ class ConstantAgent(Agent):
         super().__init__(*args, **kwargs)
 
     def predict(self, obs):
-        return self.act_helper.zeros()
+        action = np.zeros_like(self.action_space.sample())
+        return action
 
 class RandomAgent(Agent):
 
@@ -867,7 +781,7 @@ class UserInputAgent(Agent):
 
     def predict(self, obs):
         action = self.act_helper.zeros()
-       
+
         keys = pygame.key.get_pressed()
         if keys[pygame.K_w]:
             action = self.act_helper.press_keys(['w'], action)
@@ -1124,7 +1038,9 @@ def train(agent: Agent,
         agent.learn(env, total_timesteps=train_timesteps, verbose=1)
         base_env.on_training_end()
     except KeyboardInterrupt:
-        pass
+        if save_handler is not None:
+            save_handler.agent.update_num_timesteps(save_handler.num_timesteps)
+            save_handler.save_agent()
 
     env.close()
 
@@ -1138,38 +1054,26 @@ def train(agent: Agent,
 import pygame
 from pygame.locals import QUIT
 
-def _safe_init_audio() -> bool:
-    # try system pulse first, then dummy (silent), else disable audio
-    for drv in (None, "pulse", "dummy"):
-        try:
-            if drv is not None:
-                os.environ["SDL_AUDIODRIVER"] = drv
-            pygame.mixer.init()
-            return True
-        except pygame.error:
-            continue
-    return False
-
 def run_real_time_match(agent_1: UserInputAgent, agent_2: Agent, max_timesteps=30*90, resolution=CameraResolution.LOW):
     pygame.init()
 
-    audio_ok = _safe_init_audio()  # replaces: pygame.mixer.init()
+    pygame.mixer.init()
 
-    # load soundtrack only if audio is available
-    if audio_ok:
-        try:
-            pygame.mixer.music.load("environment/assets/soundtrack.mp3")
-            pygame.mixer.music.play(-1)
-            pygame.mixer.music.set_volume(0.2)
-        except Exception as e:
-            print(f"audio load failed: {e}")  # non-fatal
+    # Load your soundtrack (must be .wav, .ogg, or supported format)
+    pygame.mixer.music.load("environment/assets/soundtrack.mp3")
+
+    # Play it on loop: -1 = loop forever
+    pygame.mixer.music.play(-1)
+
+    # Optional: set volume (0.0 to 1.0)
+    pygame.mixer.music.set_volume(0.2)
 
     resolutions = {
         CameraResolution.LOW: (480, 720),
         CameraResolution.MEDIUM: (720, 1280),
         CameraResolution.HIGH: (1080, 1920)
     }
-    
+
     screen = pygame.display.set_mode(resolutions[resolution][::-1])  # Set screen dimensions
 
 
@@ -1191,17 +1095,17 @@ def run_real_time_match(agent_1: UserInputAgent, agent_2: Agent, max_timesteps=3
     timestep = 0
    # platform1 = env.objects["platform1"] #mohamed
     #stage2 = env.objects["stage2"]
-    background_image = pygame.image.load('environment/assets/map/bg.jpg').convert() 
+    background_image = pygame.image.load('environment/assets/map/bg.jpg').convert()
     while running and timestep < max_timesteps:
-       
-        # Pygame event to handle real-time user input 
-       
+
+        # Pygame event to handle real-time user input
+
         for event in pygame.event.get():
             if event.type == QUIT:
                 running = False
             if event.type == pygame.VIDEORESIZE:
                  screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
-       
+
         action_1 = agent_1.predict(obs_1)
 
         # AI input
@@ -1214,10 +1118,10 @@ def run_real_time_match(agent_1: UserInputAgent, agent_2: Agent, max_timesteps=3
         obs_2 = observations[1]
 
         # Render the game
-        
+
         img = env.render()
         screen.blit(pygame.surfarray.make_surface(img), (0, 0))
-     
+
         pygame.display.flip()
 
         # Control frame rate (30 fps)
@@ -1242,7 +1146,7 @@ def run_real_time_match(agent_1: UserInputAgent, agent_2: Agent, max_timesteps=3
         result = Result.LOSS
     else:
         result = Result.DRAW
-    
+
     match_stats = MatchStats(
         match_time=timestep / 30.0,
         player1=player_1_stats,

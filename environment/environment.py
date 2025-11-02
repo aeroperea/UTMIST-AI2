@@ -38,8 +38,6 @@ import skvideo
 import skvideo.io
 from IPython.display import Video
 
-from loguru import logger
-
 
 
 # ### MalachiteEnv Class
@@ -204,7 +202,6 @@ class ObsHelper():
     low: list[Any] = field(default_factory=list)
     high: list[Any] = field(default_factory=list)
     sections: Dict[str, Tuple[int, int]] = field(default_factory=dict)
-        
 
     def get_as_np(self) -> Tuple[np.ndarray, np.ndarray]:
         """Return the low and high bounds as NumPy arrays."""
@@ -252,7 +249,6 @@ class ObsHelper():
         """
         Prints the names and indices of all sections.
         """
-
         for name, (start, end) in self.sections.items():
             print(f"{name}: {end - start}")
 
@@ -539,7 +535,7 @@ class Camera():
     pos: list[int] = [0,0]
     zoom: float = 2.0
 
-    def scale_background(self, env, bg_image) -> None:
+    def scale_background(self, env, bg_image: pygame.image = pygame.image.load('environment/assets/map/background.png')) -> None:
         resolution: Tuple[int] = env.resolution
         window_height, window_width = self.resolutions[resolution]
 
@@ -630,9 +626,6 @@ class Camera():
         return new_x, new_y
 
     def get_frame(self, env, mode=RenderMode.RGB_ARRAY, has_hitboxes=False):
-        if mode == RenderMode.NONE:
-            return None
-        
         if not self.is_rendering:
             self._setup_render(mode)
             self.is_rendering = True
@@ -662,7 +655,7 @@ class Camera():
         draw_options = DrawOptions(self.canvas)
         draw_options.transform = transform
 
-        # Draw PyMunk objectsfrom PIL import Image, ImageSequence 
+        # Draw PyMunk objects
         #self.space.debug_draw(draw_options)
 
         #print(self.env.space)
@@ -856,8 +849,6 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
         self.resolution = resolution
         self.train_mode = train_mode
 
-        print(f'mode: {self.mode} train_mode: {train_mode}')
-
         self.agents = [0, 1] # Agent 0, agent 1
         self.logger = ['', '']
 
@@ -884,9 +875,6 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
         # Observation Space
         self.observation_space = self.get_observation_space()
 
-        self._obs_dim = int(self.observation_space.shape[0])
-        self._obs_buf = np.zeros((2, self._obs_dim), dtype=np.float32)
-
         self.camera = Camera()
 
         # Action Space
@@ -899,10 +887,7 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
             self.action_spaces[agent_id] = self.action_space
             self.observation_spaces[agent_id] = self.observation_space
 
-        self.rewards = {0: 0.0, 1: 0.0}
-        self.logger  = [{}, {}]
-
-
+        
         self.load_attacks()
 
         self.reset()
@@ -935,8 +920,7 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
         self.add_player_obs(obs_helper, 'player')
         self.add_player_obs(obs_helper, 'opponent')
 
-        if not self.train_mode:
-            logger.info(f"Obs space {obs_helper.low} {obs_helper.high}")
+        print('Obs space', obs_helper.low, obs_helper.high)
 
         self.obs_helper = obs_helper
 
@@ -994,9 +978,7 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
         #act_helper.add_key("q") #equip weapon
         #act_helper.add_key("v") #drop weapon
 
-        if not self.train_mode:
-            logger.info(f"Action space {act_helper.low} {act_helper.high}")
-
+        print('Action space', act_helper.low, act_helper.high)
 
         self.act_helper = act_helper
 
@@ -1083,10 +1065,9 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
     def step(self, action: dict[int, np.ndarray]):
         # Create new rewards dict
         self.cur_action = action
-        self.rewards[0] = 0.0
-        self.rewards[1] = 0.0
-        self.logger[0].clear(); self.logger[1].clear()
+        self.rewards = {agent: 0 for agent in self.agents}
         self.terminated = False
+        self.logger = ['', '']
 
         self.camera.process()
 
@@ -1107,8 +1088,7 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
             player.process(action[agent])
 
             if self.game_mode == GameMode.ATTACK_DEBUG and action[agent][9] > 0.5:
-                if not self.train_mode:
-                    logger.info("reloading attack data")
+                print("DEBUG: Reloading attack data")
                 self.load_attacks()
             if player.stocks <= 0:
                 self.terminated = True
@@ -1164,10 +1144,7 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
 
         self.players: list[Player] = []
         self.camera.reset(self)
-        if self.mode != RenderMode.NONE:
-            if not hasattr(self.camera, "_bg_image"):
-                self.camera._bg_image = pygame.image.load('environment/assets/map/background.png')
-            self.camera.scale_background(self, self.camera._bg_image)
+        self.camera.scale_background(self)
         self._setup()
 
         return {agent: self.observe(agent) for agent in self.agents}, {}
@@ -1178,21 +1155,9 @@ class WarehouseBrawl(MalachiteEnv[np.ndarray, np.ndarray, int]):
         # lh += [-1, -1], [1, 1] # 2d vector of global position
         # lh += [-1, -1], [1, 1] # 2d vector of global velocity
 
-        b = self._obs_buf[agent]
-        i = 0
-        v = self.players[agent].get_obs()
-        n = len(v); b[i:i+n] = v; i += n
-        v = self.players[1-agent].get_obs()
-        n = len(v); b[i:i+n] = v
-        return b
-
-
-        # original
-        # obs = []
-        # obs += self.players[agent].get_obs()
-        # obs += self.players[1-agent].get_obs()
-
-
+        obs = []
+        obs += self.players[agent].get_obs()
+        obs += self.players[1-agent].get_obs()
         #obs += self.players[agent].body.position.x, self.players[agent].body.position.y
         #obs += self.players[agent].body.position.x, self.players[agent].body.position.y
         #obs += self.players[agent].body.velocity.x, self.players[agent].body.velocity.y
@@ -4217,9 +4182,8 @@ class WeaponPool:
         self.pool.append(weapon)
 
 class WeaponSpawner:
-    def __init__(self, camera, id, env, pool, pos, cooldown_frames, despawn_frames, train_mode=True):
+    def __init__(self, camera, id, env, pool, pos, cooldown_frames, despawn_frames):
        
-        self.train_mode = train_mode
         self.id = id
         self.camera = camera
         self.env = env
@@ -4276,8 +4240,7 @@ class WeaponSpawner:
 
         
         if not pressed or not collided: return False
-        if not self.train_mode:
-            print(f'collided {w.name}, {pressed}, {collided}')
+        print(f'collided {w.name}, {pressed}, {collided}')
         player.weapon = w.name #kaden
         player.env.weapon_equip_signal.emit(agent='player' if player.agent_id == 0 else 'opponent')#kaden
 
@@ -4431,11 +4394,10 @@ class DroppedWeaponSpawner(WeaponSpawner):
         lifetime_frames: int = 300,
         vfx_folder: str = "-1",
         scale: float = 1.0,
-        flipped:bool = False,
-        train_mode=True
+        flipped:bool = False
     ):
         # Call your original WeaponSpawner __init__ with the same signature it already has
-        super().__init__(camera, id, env, pool, pos, cooldown_frames=10**9, despawn_frames=lifetime_frames,train_mode=train_mode)
+        super().__init__(camera, id, env, pool, pos, cooldown_frames=10**9, despawn_frames=lifetime_frames)
         self.flipped = flipped
        
 
@@ -4558,8 +4520,8 @@ class DroppedWeaponSpawner(WeaponSpawner):
 
 
         if not pressed or not collided: return False
-        if not self.train_mode:
-            print(f'pickup {w.name}, {pressed}, {collided}')
+      
+        print(f'pickup {w.name}, {pressed}, {collided}')
         player.weapon = w.name #kaden
         player.env.weapon_equip_signal.emit(agent='player' if player.agent_id == 0 else 'opponent')#kaden
             # --- NEW: VFX pickup one-shot -> hidden
@@ -4628,15 +4590,14 @@ class DroppedWeaponSpawner(WeaponSpawner):
                         weapon_name=current_weapon,
                         lifetime_frames=250,     # tweak as desired
                         vfx_folder="", # distinct look for dropped
-                        scale=1.0,flipped=flipped,
-                        train_mode=wb.train_mode
+                        scale=1.0,flipped=flipped
                     )
                     wb.weapon_controller.spawners.append(dropped)
                     # prevent instant re-pickup from the same key press
                     player.pickup_lock_until = wb.steps + 15  # ~0.25s at 60fps; tweak
 
-                    if not wb.train_mode:
-                        print(f"[FRAME {wb.steps}] Player {idx} dropped '{current_weapon}' spawner at {pos} (id {new_id}).")
+
+                    print(f"[FRAME {wb.steps}] Player {idx} dropped '{current_weapon}' spawner at {pos} (id {new_id}).")
                     #kaden
                     # player loses weapon → back to Punch
                     player.weapon = "Punch"
@@ -4657,8 +4618,6 @@ class DroppedWeaponSpawner(WeaponSpawner):
                     
 
 # ### Hitbox and Hurtbox
-
-# %%
 
 # In[ ]:
 

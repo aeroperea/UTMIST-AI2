@@ -17,6 +17,8 @@ import os
 os.environ["TRAIN_MODE"] = "1"
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
+import time
+import argparse
 import glob, re
 from functools import partial
 import torch 
@@ -30,13 +32,15 @@ from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMonitor
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
+from typing import Optional, Type, List, Tuple
 #
 from environment.agent import *
-from typing import Optional, Type, List, Tuple
+from user.custom_feature_extractor import *
+from user.custom_callbacks import *
+from user.reward_system import *
 
-import time
 
 # -------------------------------------------------------------------------
 # ----------------------------- AGENT CLASSES -----------------------------
@@ -103,39 +107,43 @@ class SB3Agent(Agent):
         )
 
 class RecurrentPPOAgent(Agent):
-    def __init__(self, file_path: Optional[str] = None,
-                 policy_kwargs: Optional[dict] = None,
-                 sb3_kwargs: Optional[dict] = None):
-        
+    '''
+    RecurrentPPOAgent:
+    - Defines an RL Agent that uses the Recurrent PPO (LSTM+PPO) algorithm
+    '''
+    def __init__(
+            self,
+            file_path: Optional[str] = None
+    ):
         super().__init__(file_path)
-        self._policy_kwargs = policy_kwargs or {}
-        self._sb3_kwargs = sb3_kwargs or {}
         self.lstm_states = None
         self.episode_starts = np.ones((1,), dtype=bool)
 
     def _initialize(self) -> None:
-        dev = self._sb3_kwargs.get("device", "cpu")
         if self.file_path is None:
-            self.model = RecurrentPPO(
-                "MlpLstmPolicy",
-                self.env,
-                policy_kwargs=self._policy_kwargs,
-                device=dev,
-                **{k: v for k, v in self._sb3_kwargs.items() if k != "device"}
-            )
+            policy_kwargs = {
+                'activation_fn': nn.ReLU,
+                'lstm_hidden_size': 512,
+                'net_arch': [dict(pi=[32, 32], vf=[32, 32])],
+                'shared_lstm': True,
+                'enable_critic_lstm': False,
+                'share_features_extractor': True,
+
+            }
+            self.model = RecurrentPPO("MlpLstmPolicy",
+                                      self.env,
+                                      verbose=0,
+                                      n_steps=30*90*20,
+                                      batch_size=16,
+                                      ent_coef=0.05,
+                                      policy_kwargs=policy_kwargs)
             del self.env
         else:
-            self.model = RecurrentPPO.load(self.file_path, device=dev)
-
-        # put the policy in eval mode without relying on sb3 helpers
-        if hasattr(self.model, "policy"):
-            if hasattr(self.model.policy, "set_training_mode"):
-                self.model.policy.set_training_mode(False)
-            else:
-                self.model.policy.eval()
+            self.model = RecurrentPPO.load(self.file_path)
 
     def reset(self) -> None:
         self.episode_starts = np.ones((1,), dtype=bool)
+        self.episode_starts = True
 
     def predict(self, obs):
         action, self.lstm_states = self.model.predict(obs, state=self.lstm_states, episode_start=self.episode_starts, deterministic=True)
@@ -321,18 +329,21 @@ class MLPExtractor(BaseFeaturesExtractor):
     def get_policy_kwargs(cls, features_dim: int = 64, hidden_dim: int = 64) -> dict:
         return dict(
             features_extractor_class=cls,
-            features_extractor_kwargs=dict(features_dim=features_dim, hidden_dim=hidden_dim) #NOTE: features_dim = 10 to match action space output
+            features_extractor_kwargs=dict(features_dim=features_dim, hidden_dim=hidden_dim)
         )
-    
+
+
+def _has_get_policy_kwargs(extractor_cls) -> bool:
+    return hasattr(extractor_cls, "get_policy_kwargs") and callable(getattr(extractor_cls, "get_policy_kwargs"))
+
+from user.custom_feature_extractor import _mirror_action
+
 class CustomAgent(Agent):
-    def __init__(
-        self,
-        sb3_class: Optional[Type[BaseAlgorithm]] = PPO,
-        file_path: Optional[str] = None,
-        extractor: Optional[Type[BaseFeaturesExtractor]] = None,  # pass the class (e.g., MLPExtractor)
-        sb3_kwargs: Optional[dict] = None,                        # new
-        policy_kwargs: Optional[dict] = None                      # new
-    ):
+    def __init__(self, sb3_class: Optional[Type[BaseAlgorithm]] = PPO,
+                 file_path: Optional[str] = None,
+                 extractor: Optional[Type[BaseFeaturesExtractor]] = None,
+                 sb3_kwargs: Optional[dict] = None,
+                 policy_kwargs: Optional[dict] = None):
         self.sb3_class = sb3_class
         self.extractor = extractor
         self.sb3_kwargs = sb3_kwargs or {}
@@ -341,27 +352,22 @@ class CustomAgent(Agent):
 
     def _initialize(self) -> None:
         if self.file_path is None:
-            # merge extractor-provided policy kwargs with user overrides
-            ek = self.extractor.get_policy_kwargs() if self.extractor else {}
+            ek = self.extractor.get_policy_kwargs() if (self.extractor and _has_get_policy_kwargs(self.extractor)) else {}
             pk = {**ek, **self.policy_kwargs}
-            self.model = self.sb3_class(
-                "MlpPolicy",
-                self.env,
-                policy_kwargs=pk,
-                **self.sb3_kwargs
-            )
+            self.model = self.sb3_class("MlpPolicy", self.env, policy_kwargs=pk, **self.sb3_kwargs)
             del self.env
         else:
-            # allow device override on load
             device = self.sb3_kwargs.get("device", "auto")
             self.model = self.sb3_class.load(self.file_path, device=device)
+
 
     def _gdown(self) -> Optional[str]:
         return
 
     def predict(self, obs):
+        sign = 1.0 if (obs.shape[0] > 4 and float(obs[4]) > 0.5) else -1.0
         action, _ = self.model.predict(obs)
-        return action
+        return _mirror_action(action, sign)
 
     def save(self, file_path: str) -> None:
         self.model.save(file_path, include=['num_timesteps'])
@@ -371,260 +377,8 @@ class CustomAgent(Agent):
         self.model.verbose = verbose
         self.model.learn(total_timesteps=total_timesteps, log_interval=log_interval)
 
-# --------------------------------------------------------------------------------
-# ----------------------------- REWARD FUNCTIONS API -----------------------------
-# --------------------------------------------------------------------------------
-
-'''
-Example Reward Functions:
-- Find more [here](https://colab.research.google.com/drive/1qMs336DclBwdn6JBASa5ioDIfvenW8Ha?usp=sharing#scrollTo=-XAOXXMPTiHJ).
-'''
-
-def base_height_l2(
-    env: WarehouseBrawl,
-    target_height: float,
-    obj_name: str = 'player'
-) -> float:
-    """Penalize asset height from its target using L2 squared kernel.
-
-    Note:
-        For flat terrain, target height is in the world frame. For rough terrain,
-        sensor readings can adjust the target height to account for the terrain.
-    """
-    # Extract the used quantities (to enable type-hinting)
-    obj: GameObject = env.objects[obj_name]
-
-    # Compute the L2 squared penalty
-    return (obj.body.position.y - target_height)**2
-
-class RewardMode(Enum):
-    ASYMMETRIC_OFFENSIVE = 0
-    SYMMETRIC = 1
-    ASYMMETRIC_DEFENSIVE = 2
-
-def damage_interaction_reward(
-    env: WarehouseBrawl,
-    mode: RewardMode = RewardMode.SYMMETRIC,
-) -> float:
-    """
-    Computes the reward based on damage interactions between players.
-
-    Modes:
-    - ASYMMETRIC_OFFENSIVE (0): Reward is based only on damage dealt to the opponent
-    - SYMMETRIC (1): Reward is based on both dealing damage to the opponent and avoiding damage
-    - ASYMMETRIC_DEFENSIVE (2): Reward is based only on avoiding damage
-
-    Args:
-        env (WarehouseBrawl): The game environment
-        mode (DamageRewardMode): Reward mode, one of DamageRewardMode
-
-    Returns:
-        float: The computed reward.
-    """
-    # Getting player and opponent from the enviornment
-    player: Player = env.objects["player"]
-    opponent: Player = env.objects["opponent"]
-
-    # Reward dependent on the mode
-    damage_taken = player.damage_taken_this_frame
-    damage_dealt = opponent.damage_taken_this_frame
-
-    if mode == RewardMode.ASYMMETRIC_OFFENSIVE:
-        reward = damage_dealt
-    elif mode == RewardMode.SYMMETRIC:
-        reward = damage_dealt - damage_taken
-    elif mode == RewardMode.ASYMMETRIC_DEFENSIVE:
-        reward = -damage_taken
-    else:
-        raise ValueError(f"Invalid mode: {mode}")
-
-    return reward / 140
-
 
 # In[ ]:
-
-
-def danger_zone_reward(
-    env: WarehouseBrawl,
-    zone_penalty: int = 1,
-    zone_height: float = 4.2
-) -> float:
-    """
-    Applies a penalty for every time frame player surpases a certain height threshold in the environment.
-
-    Args:
-        env (WarehouseBrawl): The game environment.
-        zone_penalty (int): The penalty applied when the player is in the danger zone.
-        zone_height (float): The height threshold defining the danger zone.
-
-    Returns:
-        float: The computed penalty as a tensor.
-    """
-    # Get player object from the environment
-    player: Player = env.objects["player"]
-
-    # Apply penalty if the player is in the danger zone
-    reward = -zone_penalty if player.body.position.y >= zone_height else 0.0
-
-    return reward * env.dt
-
-def in_state_reward(
-    env: WarehouseBrawl,
-    desired_state: Type[PlayerObjectState]=BackDashState,
-) -> float:
-    """
-    Applies a penalty for every time frame player surpases a certain height threshold in the environment.
-
-    Args:
-        env (WarehouseBrawl): The game environment.
-        zone_penalty (int): The penalty applied when the player is in the danger zone.
-        zone_height (float): The height threshold defining the danger zone.
-
-    Returns:
-        float: The computed penalty as a tensor.
-    """
-    # Get player object from the environment
-    player: Player = env.objects["player"]
-
-    # Apply penalty if the player is in the danger zone
-    reward = 1 if isinstance(player.state, desired_state) else 0.0
-
-    return reward * env.dt
-
-def head_to_middle_reward(
-    env: WarehouseBrawl,
-) -> float:
-    """
-    Applies a penalty for every time frame player surpases a certain height threshold in the environment.
-
-    Args:
-        env (WarehouseBrawl): The game environment.
-        zone_penalty (int): The penalty applied when the player is in the danger zone.
-        zone_height (float): The height threshold defining the danger zone.
-
-    Returns:
-        float: The computed penalty as a tensor.
-    """
-    # Get player object from the environment
-    player: Player = env.objects["player"]
-
-    # Apply penalty if the player is in the danger zone
-    multiplier = -1 if player.body.position.x > 0 else 1
-    reward = multiplier * (player.body.position.x - player.prev_x)
-
-    return reward
-
-def head_to_opponent(
-    env: WarehouseBrawl,
-) -> float:
-
-    # Get player object from the environment
-    player: Player = env.objects["player"]
-    opponent: Player = env.objects["opponent"]
-
-    # Apply penalty if the player is in the danger zone
-    multiplier = -1 if player.body.position.x > opponent.body.position.x else 1
-    reward = multiplier * (player.body.position.x - player.prev_x)
-
-    return reward
-
-def holding_more_than_3_keys(
-    env: WarehouseBrawl,
-) -> float:
-
-    # Get player object from the environment
-    player: Player = env.objects["player"]
-
-    # Apply penalty if the player is holding more than 3 keys
-    a = player.cur_action
-    if (a > 0.5).sum() > 3:
-        return env.dt
-    return 0
-
-def on_win_reward(env: WarehouseBrawl, agent: str) -> float:
-    if agent == 'player':
-        return 1.0
-    else:
-        return -1.0
-
-def on_knockout_reward(env: WarehouseBrawl, agent: str) -> float:
-    if agent == 'player':
-        return -1.0
-    else:
-        return 1.0
-    
-def on_equip_reward(env: WarehouseBrawl, agent: str) -> float:
-    if agent == "player":
-        if env.objects["player"].weapon == "Hammer":
-            return 2.0
-        elif env.objects["player"].weapon == "Spear":
-            return 1.0
-    return 0.0
-
-def on_drop_reward(env: WarehouseBrawl, agent: str) -> float:
-    if agent == "player":
-        if env.objects["player"].weapon == "Punch":
-            return -1.0
-    return 0.0
-
-def on_combo_reward(env: WarehouseBrawl, agent: str) -> float:
-    if agent == 'player':
-        return -1.0
-    else:
-        return 1.0
-
-'''
-Add your dictionary of RewardFunctions here using RewTerms
-'''
-def gen_reward_manager():
-    reward_functions = {
-        #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
-        'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.5),
-        'damage_interaction_reward': RewTerm(func=damage_interaction_reward, weight=1.0),
-        #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        #'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.05),
-        'penalize_attack_reward': RewTerm(func=in_state_reward, weight=-0.04, params={'desired_state': AttackState}),
-        'holding_more_than_3_keys': RewTerm(func=holding_more_than_3_keys, weight=-0.01),
-        #'taunt_reward': RewTerm(func=in_state_reward, weight=0.2, params={'desired_state': TauntState}),
-    }
-    signal_subscriptions = {
-        'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
-        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=8)),
-        'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=5)),
-        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=10)),
-        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_reward, weight=15))
-    }
-    return RewardManager(reward_functions, signal_subscriptions)
-
-class RewardBreakdownCallback(BaseCallback):
-    def __init__(self, verbose: int = 0):
-        super().__init__(verbose)
-        self._acc = {}
-        self._n = 0
-
-    def _on_step(self) -> bool:
-        # on-policy: `infos` present during rollout collection
-        infos = self.locals.get("infos", [])
-        for inf in infos:
-            if not inf:
-                continue
-            terms = inf.get("rew_terms")
-            if terms:
-                for k, v in terms.items():
-                    self._acc[k] = self._acc.get(k, 0.0) + float(v)
-                self._acc["_signals"] = self._acc.get("_signals", 0.0) + float(inf.get("rew_signals", 0.0))
-                self._n += 1
-        return True
-
-    def _on_rollout_end(self) -> None:
-        if self._n > 0:
-            for k, s in self._acc.items():
-                mean = s / self._n
-                self.logger.record(f"reward_terms/{k}", mean)
-                if self.verbose:
-                    print(f"[rew] {k}: {mean:.5f}")
-        self._acc.clear()
-        self._n = 0
 
 # --- env factory ---
 
@@ -637,175 +391,191 @@ def make_env(i: int,
     returns a thunk that builds ONE independent env (needed by VecEnv)
     """
     def _init():
-        # silence audio for headless workers
+        # headless + single-thread hints
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        torch.set_num_threads(1)
         os.environ.setdefault("OMP_NUM_THREADS", "1")
         os.environ.setdefault("MKL_NUM_THREADS", "1")
-        torch.set_num_threads(1)
 
-        rm = gen_reward_manager()
+        sp = DirSelfPlayRandom(policy_partial, ckpt_dir) if opponent_mode == "random" \
+             else DirSelfPlayLatest(policy_partial, ckpt_dir)
 
-        sp = DirSelfPlayRandom(policy_partial, ckpt_dir) if opponent_mode == "random" else DirSelfPlayLatest(policy_partial, ckpt_dir)
-
-        opponents = {"self_play": (1.0, sp)}
+        opponents = {
+            'self_play': (1.0, sp),
+            # you can mix in scripted opponents if you want, e.g.:
+            # 'based_agent': (0.2, partial(BasedAgent)),
+            # 'constant_agent': (0.1, partial(ConstantAgent)),
+        }
         opp_cfg = OpponentsCfg(opponents=opponents)
 
-        # do NOT pass a SaveHandler into workers
-        rm = gen_reward_manager()
+	# do NOT pass a SaveHandler into workers
+        rm = gen_reward_manager(log_terms=(i == 0))
         env = SelfPlayWarehouseBrawl(
-            reward_manager=rm, opponent_cfg=opp_cfg,
-            save_handler=None, resolution=resolution,
-            train_mode=True, mode=RenderMode.NONE
+            reward_manager=rm,
+            opponent_cfg=opp_cfg,
+            save_handler=None,
+            resolution=resolution,
+            train_mode=True,
+            mode=RenderMode.NONE,
+            debug_log_terms=(i == 0)
         )
-        rm.subscribe_signals(env.raw_env)  # <-- take this from original
-        return Monitor(env)
+        env.raw_env = PrevPosWrapper(env.raw_env)
+        rm.subscribe_signals(env.raw_env)
 
+        # mirror spec (fill indices to match your action layout; defaults are no-op)
+        swap_pairs   = []     # e.g. [(0,1)] if 0=left,1=right buttons
+        mirror_axes  = []     # e.g. [2] if axis 2 is horiz in [0,1]
+        mirror_angles= []     # e.g. [3] if 3 is aim angle in [0,1]
+
+        # train-time mirroring for the learner
+        env = ActionMirrorWrapper(
+            env,
+            facing_index=4,   # your facing bit (True=right, False=left)
+            px_index=0, ox_index=32,
+            swap_pairs=((1, 3),),  # A<->D
+            mirror_axes=(), mirror_angles=(),
+            invert_facing=False
+        )
+        return env
     return _init
 
-def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
-    zips = glob.glob(os.path.join(ckpt_dir, f"{prefix}*.zip"))
-    if not zips:
-        return None
-    # sort by the trailing step number; fall back to mtime if needed
-    def _key(p):
-        m = re.search(rf"{re.escape(prefix)}(\d+)\.zip$", os.path.basename(p))
-        return int(m.group(1)) if m else -1
-    zips.sort(key=_key)
-    return zips[-1]
-
-class PhaseTimerCallback(BaseCallback):
-    def __init__(self, verbose: int = 0):
-        super().__init__(verbose)
-        self._t_rollout_start = None
-        self._t_last_rollout_end = None
-
-    # required by BaseCallback (abstract)
-    def _on_step(self) -> bool:
-        # do nothing per-step; keep training going
-        return True
-
-    def _on_rollout_start(self) -> None:
-        now = time.time()
-        # if we just finished a prior rollout, the time since then is training time
-        if self._t_last_rollout_end is not None:
-            train_sec = now - self._t_last_rollout_end
-            self.logger.record("phases/train_sec", float(train_sec))
-            if self.verbose:
-                print(f"[phase] train {train_sec:.2f}s")
-        self._t_rollout_start = now
-
-    def _on_rollout_end(self) -> None:
-        now = time.time()
-        if self._t_rollout_start is not None:
-            rollout_sec = now - self._t_rollout_start
-            self.logger.record("phases/rollout_sec", float(rollout_sec))
-            if self.verbose:
-                print(f"[phase] rollout {rollout_sec:.2f}s")
-        self._t_last_rollout_end = now
-
-    def _on_training_end(self) -> None:
-        # capture the last train segment (after the final rollout)
-        if self._t_last_rollout_end is not None:
-            train_sec = time.time() - self._t_last_rollout_end
-            self.logger.record("phases/train_sec_final", float(train_sec))
-            if self.verbose:
-                print(f"[phase] train(final) {train_sec:.2f}s")
-
-
+def _parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--numworkers", "-nw", type=int, default=None,
+                   help="how many env workers (omit to use the script default)")
+    return p.parse_args()
 
 if __name__ == "__main__":
 
-    # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
-    EXP_ROOT = "checkpoints/experiment_11(Recurrent shared)"
-    os.makedirs(EXP_ROOT, exist_ok=True)
+    name_prefix="FusedFeatureExtractor7N_NewRewards"
 
-    # ---- vectorized env build ----
-    n_envs = 32
+    # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
+    EXP_ROOT = f'checkpoints/{name_prefix}'
+    os.makedirs(EXP_ROOT, exist_ok=True)
+    
+    args = _parse_args()
+
+    # single source of truth for the built-in default
+    DEFAULT_NUM_WORKERS = 32
+
+    # use cli override if provided; else keep the script's default
+    n_envs = args.numworkers if args.numworkers is not None else DEFAULT_NUM_WORKERS
+    
+    def clip_sched(progress_remaining: float) -> float:
+        # sb3 passes 1.0 -> 0.0 over training; start wide (0.3), end tighter (0.1)
+        return 0.1 + 0.2 * progress_remaining
 
     # ---- sb3 hyperparams ----
     # note: with vectorized training, total rollout per update = n_steps * n_envs
     sb3_kwargs = dict(
         device="cuda",
         verbose=1,
-        n_steps=512,       # per-env rollout; 1024*8 = 8192 samples/update if n_envs=8
-        batch_size=512,    # must divide n_steps * n_envs
-        n_epochs=5,
-        learning_rate=3e-4,
-        gamma=0.999,
-        gae_lambda=0.95,
-        ent_coef=0.0077,
-        clip_range=0.2,
-        target_kl=0.1,
-        clip_range_vf = 0.2,
-        vf_coef = 0.5,
-        max_grad_norm = 0.5,     
+        n_steps=2048,            # per-env; total rollout = n_steps * n_envs
+        batch_size=16384,        # divides total rollout; 65536/16384 = 4 minibatches
+        n_epochs=4,              # 4 minibatches * 4 epochs = 16 SGD passes / update
+        learning_rate=2.25e-4,    # with LR cosine → ~3e-5 end (your callback handles it)
+        gamma=0.997,
+        gae_lambda=0.96,
+        ent_coef=0.02,           # decay with your EntropyScheduleCallback
+        clip_range=clip_sched,   # 0.3 → 0.1 over training
+        target_kl=0.06,          # early stop if updates jumpy
+        clip_range_vf=0.167,
+        normalize_advantage=True,
+        max_grad_norm=0.5,
+        # optional (nice with continuous Box + mirroring):
+        # sde_sample_freq=4,
     )
+
+
+    # features_extractor_kwargs
+    FUSED_EXTRACTOR_KW = dict(
+        features_dim=256,
+        hidden_dim=512,
+        enum_fields=observation_fields,
+        xy_player=[0, 1],
+        xy_opponent=[32, 33],
+        use_pairwise=True,
+        facing_index=4,
+        flip_x_indices=(0, 2, 32, 34),
+        flip_pair_dx=True,
+        invert_facing=False,
+        use_compile=False,
+        n_blocks=7  # <--- set 4 first; try 6 if value underfits
+    )
+
 
     policy_kwargs = dict(
-        activation_fn=nn.SiLU,
-        net_arch=dict(pi=[512, 256], vf=[512, 256]),
-        lstm_hidden_size=512,                       # core recurrent capacity
-        n_lstm_layers=2,
-        shared_lstm=True,                           # shared torso for pi/vf, cheaper and stable
-        enable_critic_lstm=False,                   
-        ortho_init=True,
-        features_extractor_class=MLPExtractor,
-        features_extractor_kwargs=dict(features_dim=128, hidden_dim=256)
+            activation_fn=nn.SiLU,
+            net_arch=[dict(pi=[256, 256, 128, 128], vf=[256, 256, 128, 128])],
+            features_extractor_class=FusedFeatureExtractor,
+            features_extractor_kwargs=FUSED_EXTRACTOR_KW,
         )
+    
+    
 
-    # what the opponent loads when env.reset() happens
-    opp_sb3_kwargs = {**sb3_kwargs, "device": "cpu"}
-    policy_partial = partial(RecurrentPPOAgent,
-                         policy_kwargs=policy_kwargs,
-                         sb3_kwargs=opp_sb3_kwargs)  # <-- opponents on cpu
-
-    vec_env = SubprocVecEnv(
-        [make_env(i, EXP_ROOT, policy_partial, opponent_mode="random", resolution=CameraResolution.LOW)
-        for i in range(n_envs)],
-        start_method="spawn"  # safer with CUDA and SDL
+    policy_partial_cpu = partial(
+        CustomAgent,
+        sb3_class=PPO,
+        extractor=FusedFeatureExtractor,
+        sb3_kwargs=dict(device="cpu"),
+        policy_kwargs=policy_kwargs
     )
+
+    base_env = SubprocVecEnv(
+        [make_env(i, EXP_ROOT, policy_partial_cpu, opponent_mode="random", resolution=CameraResolution.LOW)
+        for i in range(n_envs)],
+        # on linux, prefer default 'fork' unless you hit cuda/pytorch issues
+        start_method="spawn"
+    )
+
+    mon_env = VecMonitor(base_env, filename=os.path.join(EXP_ROOT, "monitor"))
 
     # try to resume: load vecnormalize stats if present, otherwise create fresh
     vn_path = os.path.join(EXP_ROOT, "vecnormalize.pkl")  # we’ll save to this name below
     if os.path.exists(vn_path):
-        vec_env = VecNormalize.load(vn_path, vec_env)
-        vec_env.training = True   # important when resuming training
+        vec_env = VecNormalize.load(vn_path, mon_env)
+        vec_env.training = True
         vec_env.norm_reward = True
+        vec_env.norm_obs = False   # fused extractor expects raw (unnormalized) obs
     else:
-        vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=sb3_kwargs["gamma"])
+            vec_env = VecNormalize(
+            mon_env,
+            norm_obs=False,          # <-- important with fused extractor
+            norm_reward=True,
+            clip_obs=10.0,
+            gamma=sb3_kwargs["gamma"],
+        )
+            
 
+    def _latest_ckpt(ckpt_dir: str, prefix: str = "rl_model_") -> Optional[str]:
+        zips = glob.glob(os.path.join(ckpt_dir, f"{prefix}*.zip"))
+        if not zips:
+            return None
+        # sort by the trailing step number; fall back to mtime if needed
+        def _key(p):
+            m = re.search(rf"{re.escape(prefix)}(\d+)\.zip$", os.path.basename(p))
+            return int(m.group(1)) if m else -1
+        zips.sort(key=_key)
+        return zips[-1]
 
     # resume model if there is a checkpoint, else start fresh
     load_checkpoint = True
     if load_checkpoint:
-        latest = _latest_ckpt(EXP_ROOT, "rl_model_")
+        latest = _latest_ckpt(EXP_ROOT, name_prefix)
     if load_checkpoint and latest is not None:
          # ---- PPO model ----
-        model = RecurrentPPO.load(latest, env=vec_env, device=sb3_kwargs["device"])
+        model = PPO.load(latest, env=vec_env, device=sb3_kwargs["device"])
         print(f"[resume] loaded {latest}")
     else:
          # ---- PPO model ----
-        model = RecurrentPPO(
-            policy="MlpLstmPolicy",
-            env=vec_env,
-            policy_kwargs=policy_kwargs,
-            **sb3_kwargs
-        )
+        model = PPO(policy="MlpPolicy", env=vec_env, policy_kwargs=policy_kwargs, **sb3_kwargs)
         if load_checkpoint:
             print("[resume] no checkpoint found; starting fresh")
         else:
             print("load checkpoint was false starting fresh")
 
     # saving
-    target_save_every = 100_000
-    ckpt_cb = CheckpointCallback(
-        save_freq=max(1, target_save_every // n_envs),
-        save_path=EXP_ROOT,
-        name_prefix="rl_model",
-        save_replay_buffer=False,
-        save_vecnormalize=False,
-    )
-        
     class SaveVecNormCallback(BaseCallback):
         def __init__(self, save_freq: int, path: str, verbose: int = 0):
             super().__init__(verbose)
@@ -821,21 +591,57 @@ if __name__ == "__main__":
                     if self.verbose >= 1:
                         print(f"[vecnorm] saved {self.path} at {self.num_timesteps} steps")
             return True
+    target_save_every = 500_000
+    ckpt_cb = CheckpointCallback(
+        save_freq=max(1, target_save_every // n_envs),
+        save_path=EXP_ROOT,
+        name_prefix=name_prefix,
+        save_replay_buffer=False,
+        save_vecnormalize=True,
+        verbose=1
+    )
+    
+    # TOTAL STEPS
+    total_steps = 64_000_000
 
+    # callbacks
     vec_cb = SaveVecNormCallback(save_freq=target_save_every, path=vn_path)
     rb_cb  = RewardBreakdownCallback(verbose=1)
     timing_cb = PhaseTimerCallback(verbose=1)
+    entSched_cb = EntropyScheduleCallback(total_timesteps=total_steps, start=0.02, end=0.005, warmup_frac=0.02)
+
+    # learning-rate scheduler (cosine decay with 2% warmup; 3e-4 -> 3e-5)
+    lrSched_cb = LRScheduleCallback(
+        total_timesteps=total_steps,
+        initial_lr=sb3_kwargs["learning_rate"],
+        final_lr=3e-5,
+        warmup_frac=0.01,
+        schedule="cosine",
+        # if you prefer step decay instead:
+        # schedule="step", step_milestones=[1_500_000, 3_000_000, 5_000_000], step_factor=0.5,
+        verbose=0,
+    )
+
+    # rwSched_cb = RewardScheduleCallback(
+    #             schedule=[
+    #                 (100_000, {"head_to_opponent": 0.10}, False),
+    #                 (400_000, {"damage_interaction_reward": 3.0}, False),
+    #                 (1_000_000, {"danger_zone_reward": 0.2, "head_to_opponent": 0.0}, True),  # stage switch
+    #             ],
+    #             verbose=1,
+    #         )
 
     # ---- train ----
-    total_steps = 5_000_000
     model.learn(total_timesteps=total_steps, callback=CallbackList(
                                                         [ckpt_cb, 
                                                          vec_cb, 
                                                          rb_cb, 
-                                                         timing_cb
+                                                         timing_cb,
+                                                         lrSched_cb,
+                                                        #  rwSched_cb
                                                          ]))
 
     # final save
     model.save(os.path.join(EXP_ROOT, "final_model"))
     model.get_vec_normalize_env().save(vn_path)
-    vec_env.close()
+    vec_env.close()# train-time mirroring for the learner
