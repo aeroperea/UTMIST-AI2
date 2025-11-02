@@ -223,7 +223,7 @@ class SubmittedAgent(Agent):
         data_path = "rl-model.zip"
         if not os.path.isfile(data_path):
             print(f"downloading {data_path}...")
-            url = "https://drive.google.com/file/d/1JIokiBOrOClh8piclbMlpEEs6mj3H1HJ/view?usp=sharing"
+            url = "https://drive.google.com/file/d/1pwKQcK5kqK1la5FNBHo84HZeBkfkVlm_/view?usp=sharing"
             gdown.download(url, output=data_path, fuzzy=True)
         return data_path
 
