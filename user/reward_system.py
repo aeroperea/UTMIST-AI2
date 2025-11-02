@@ -358,7 +358,7 @@ def on_equip_reward(env: WarehouseBrawl, agent: str) -> float:
 def on_drop_penalty(env: WarehouseBrawl, agent: str) -> float:
     if agent == "player":
         if env.objects["player"].weapon == "Punch":
-            return -1.0
+            return -2.0
     return 0.0
 
 def on_combo_reward(env: WarehouseBrawl, agent: str) -> float:
@@ -387,6 +387,60 @@ def weapon_distance_reward(env: WarehouseBrawl) -> float:
     if math.isfinite(d2):
         return -d2 * ctx.dt
     return 0.0
+
+def downslam_when_lower_than_platform_penalty(env: WarehouseBrawl, platform_height: float = 3.0, penalty: float = 1.0) -> float:
+    ctx = ctx_or_compute(env)
+    p = env.objects["player"]
+
+    # Check if player is performing a downslam-like action.
+    is_downslamming = False
+    is_downslamming_attr = getattr(p, "is_downslamming", None)
+    if callable(is_downslamming_attr):
+        try:
+            is_downslamming = bool(is_downslamming_attr())
+        except Exception:
+            is_downslamming = False
+
+    if not is_downslamming:
+        return 0.0
+
+    # Penalize if player is below the platform height
+    if ctx.py > platform_height:
+        return -penalty * ctx.dt
+
+    return 0.0
+
+def jump_interval_reward(env: WarehouseBrawl, min_interval: float = 1.0, scale: float = 1.0) -> float:
+    ctx = ctx_or_compute(env)
+    p = env.objects["player"]
+
+    # detect jump start: was on floor and now not, and upward velocity (y+ is down => vy < 0 is upward)
+    on_floor = bool(p.is_on_floor()) if hasattr(p, "is_on_floor") else False
+    was_on_floor = bool(getattr(p, "_rw_was_on_floor", on_floor))
+    vy = float(getattr(p.body, "velocity", (0.0, 0.0))[1])
+    jump_started = was_on_floor and (not on_floor) and (vy < -0.1)
+
+    # maintain time-since-last-jump timer on the player
+    prev_timer = float(getattr(p, "_rw_time_since_last_jump", 1e9))
+    if jump_started:
+        interval = prev_timer
+        # reset timer
+        p._rw_time_since_last_jump = 0.0
+        # penalize if interval shorter than ideal `min_interval`
+        if interval < min_interval:
+            frac = max(0.0, 1.0 - (interval / max(1e-6, min_interval)))
+            penalty = - (frac * frac) * scale
+            out = penalty
+        else:
+            out = 0.0
+    else:
+        # accumulate time
+        p._rw_time_since_last_jump = min(1e9, prev_timer + ctx.dt)
+        out = 0.0
+
+    # persist floor flag for next frame
+    p._rw_was_on_floor = on_floor
+    return out
 
 def throw_quality_reward(env: WarehouseBrawl) -> float:
     ctx = ctx_or_compute(env)
@@ -489,6 +543,79 @@ def idle_penalty(
     t = max(0.0, (speed_thresh - ema) / max(1e-6, speed_thresh))
     return -(t * t) * ctx.dt
 
+
+def downslam_penalty(env: WarehouseBrawl, penalty_scale: float = 50.0) -> float:
+    """
+    Penalize downslam (DSig/DAir) attacks when player is below the nearest ground/platform.
+    """
+    ctx = ctx_or_compute(env)
+    p = env.objects.get("player", None)
+    if p is None:
+        return 0.0
+
+    # Check if player is in an attack state
+    state = getattr(p, "state", None)
+    if not isinstance(state, AttackState):
+        return 0.0
+
+    # Get the move type being executed
+    move_type = getattr(state, "move_type", None)
+    if move_type is None:
+        return 0.0
+
+    # Check if it's a downslam (DSig or DAir)
+    is_downslam = False
+    try:
+        move_name = getattr(move_type, "name", str(move_type)).upper()
+        if "DSIG" in move_name or "DAIR" in move_name or ("DOWN" in move_name and ("SIG" in move_name or "AIR" in move_name)):
+            is_downslam = True
+    except:
+        pass
+
+    if not is_downslam:
+        return 0.0
+
+    # Player is performing a downslam attack
+    player_y = ctx.py
+
+    # Find the highest platform/ground below the player
+    highest_ground_below = -float('inf')
+
+    for obj in getattr(env, "objects", {}).values():
+        if obj is p:
+            continue
+
+        # --- SAFE: skip objects without a body or position ---
+        body = getattr(obj, "body", None)
+        if body is None or not hasattr(body, "position"):
+            continue
+
+        obj_pos = getattr(body, "position", None)
+        if obj_pos is None:
+            continue
+
+        obj_y = float(obj_pos.y)
+
+        # Check if it's below player
+        if obj_y < player_y:
+            highest_ground_below = max(highest_ground_below, obj_y)
+
+    # Apply penalty
+    if highest_ground_below > -float('inf'):
+        distance_to_ground = player_y - highest_ground_below
+        if distance_to_ground < 2.0:
+            return -penalty_scale * ctx.dt
+        else:
+            proximity_factor = max(0.0, 1.0 - (distance_to_ground / 5.0))
+            return -penalty_scale * 0.5 * proximity_factor * ctx.dt
+
+    if player_y < ctx.half_h - 1.0:
+        return -penalty_scale * 0.3 * ctx.dt
+
+    return 0.0
+
+
+
 '''
 Add your dictionary of RewardFunctions here using RewTerms
 '''
@@ -496,7 +623,7 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=1.0),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*6.7),
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*40),
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=4.0,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
@@ -504,7 +631,7 @@ def gen_reward_manager(log_terms: bool=True):
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=7.5,
                                            params={"y_thresh": 0.8, "pos_only": True}),
         'move_dir_reward': RewTerm(func=head_to_opponent, weight=5.0),
-        'move_towards_reward': RewTerm(func=head_to_opponent, weight=10.0, params={"threshold" : 0.55, "pos_only": True}),
+        'move_towards_reward': RewTerm(func=head_to_opponent, weight=75.0, params={"threshold" : 0.55, "pos_only": True}),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
@@ -517,6 +644,12 @@ def gen_reward_manager(log_terms: bool=True):
         'edge_safety':             RewTerm(func=edge_safety, weight=0.77),
         'holding_more_than_3_keys': RewTerm(func=holding_nokeys_or_more_than_3keys_penalty, weight=7.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-3.5, params={'desired_state': TauntState}),
+        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-200.0, params={'pad': 1.0, 'only_bottom': False}),
+        'spam_penalty': RewTerm(func=spam_penalty, weight=1.5, params={'attack_thresh': 3}),
+        'throw_quality': RewTerm(func=throw_quality_reward, weight=2.0),
+        'weapon_distance': RewTerm(func=weapon_distance_reward, weight=0.5),
+        'jump_interval': RewTerm(func=jump_interval_reward, weight=4.0, params={'min_interval': 1.0, 'scale': 1.0}),
+        'downslam_penalty': RewTerm(func=downslam_penalty, weight=1.0, params={'penalty_scale': 50.0}),
         'fell_off_map': RewTerm(func=fell_off_map_event, weight=-100.0, params={'pad': 1.0, 'only_bottom': False}),
         'throw_quality': RewTerm(func=throw_quality_reward, weight=11.0),
         'weapon_distance': RewTerm(func=weapon_distance_reward, weight=4.0),
@@ -533,7 +666,7 @@ def gen_reward_manager(log_terms: bool=True):
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
         'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=75)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
-        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=20)),
-        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=25))
+        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=45)),
+        'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=10))
     }
     return RewardManager(reward_functions, signal_subscriptions, log_terms=log_terms)
