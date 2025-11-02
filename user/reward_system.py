@@ -631,7 +631,7 @@ def gen_reward_manager(log_terms: bool=True):
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=3.75,
                                            params={"y_thresh": 0.8, "pos_only": True}),
         'move_dir_reward': RewTerm(func=head_to_opponent, weight=10.0),
-        'move_towards_reward': RewTerm(func=head_to_opponent, weight=75.0, params={"threshold" : 0.55, "pos_only": True}),
+        'move_towards_reward': RewTerm(func=head_to_opponent, weight=100.0, params={"threshold" : 0.55, "pos_only": True}),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
@@ -645,11 +645,11 @@ def gen_reward_manager(log_terms: bool=True):
         'holding_more_than_3_keys': RewTerm(func=holding_nokeys_or_more_than_3keys_penalty, weight=7.0),
         'taunt_reward': RewTerm(func=in_state_reward, weight=-3.5, params={'desired_state': TauntState}),
         'spam_penalty': RewTerm(func=spam_penalty, weight=8.0, params={'attack_thresh': 3}),
-        'jump_interval': RewTerm(func=jump_interval_reward, weight=4.0, params={'min_interval': 1.0, 'scale': 1.0}),
-        'downslam_penalty': RewTerm(func=downslam_penalty, weight=1.0, params={'penalty_scale': 20.0}),
+        # 'jump_interval': RewTerm(func=jump_interval_reward, weight=4.0, params={'min_interval': 1.0, 'scale': 1.0}),
+        # 'downslam_penalty': RewTerm(func=downslam_penalty, weight=1.0, params={'penalty_scale': 20.0}),
         'fell_off_map': RewTerm(func=fell_off_map_event, weight=-400.0, params={'pad': 1.0, 'only_bottom': False}),
-        'throw_quality': RewTerm(func=throw_quality_reward, weight=11.0),
-        'weapon_distance': RewTerm(func=weapon_distance_reward, weight=4.5),
+        # 'throw_quality': RewTerm(func=throw_quality_reward, weight=11.0),
+        # 'weapon_distance': RewTerm(func=weapon_distance_reward, weight=4.5),
 
         'spam_penalty': RewTerm(
             func=spam_penalty,
@@ -663,7 +663,7 @@ def gen_reward_manager(log_terms: bool=True):
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
         'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=150)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
-        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=45)),
+        'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=50)),
         'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=10))
     }
     return RewardManager(reward_functions, signal_subscriptions, log_terms=log_terms)

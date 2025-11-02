@@ -11,21 +11,35 @@ pygame.init()
 
 # anchor: config
 # primary checkpoint + optional alternate
-path: str = "/home/aero/ML/RL/UTMIST-AI2/checkpoints/FusedFeatureExtractor7N_NewRewards/FusedFeatureExtractor7N_NewRewards_1499976_steps.zip"
+path: str = "checkpoints/FusedFeatureExtractor7N_NewRewards_5499912_steps.zip"
 pathAlt: Optional[str] = None
+
+# # primary architecture; set any to None to use defaults baked into SubmittedAgent
+# arch: Dict[str, Optional[Any]] = {
+#     "pi_shape": [256,256,128,128],            # e.g., [256, 256, 128]
+#     "vf_shape": [256,256,128,128],            # e.g., [256, 256, 128]
+#     "extractor_n_blocks": 7,  # e.g., 6
+# }
+
+# # optional alternate architecture
+# archAlt: Optional[Dict[str, Optional[Any]]] = {
+#     "pi_shape": [256,256,128,128],            # e.g., [256, 256, 128]
+#     "vf_shape": [256,256,128,128],            # e.g., [256, 256, 128]
+#     "extractor_n_blocks": 7,  # e.g., 6
+# }
 
 # primary architecture; set any to None to use defaults baked into SubmittedAgent
 arch: Dict[str, Optional[Any]] = {
-    "pi_shape": [256, 256, 128, 128],            # e.g., [256, 256, 128]
-    "vf_shape": [256, 256, 128, 128],            # e.g., [256, 256, 128]
-    "extractor_n_blocks": 7,  # e.g., 6
+    "pi_shape": None,            # e.g., [256, 256, 128]
+    "vf_shape": None,            # e.g., [256, 256, 128]
+    "extractor_n_blocks": None,  # e.g., 6
 }
 
 # optional alternate architecture
 archAlt: Optional[Dict[str, Optional[Any]]] = {
-    "pi_shape": [256, 256, 128, 128],            # e.g., [256, 256, 128]
-    "vf_shape": [256, 256, 128, 128],            # e.g., [256, 256, 128]
-    "extractor_n_blocks": 7,  # e.g., 6
+    "pi_shape": None,            # e.g., [256, 256, 128]
+    "vf_shape": None,            # e.g., [256, 256, 128]
+    "extractor_n_blocks": None,  # e.g., 6
 }
 
 # single boolean to flip both checkpoint sides and architectures
