@@ -623,9 +623,9 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=1.0),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*40),
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*50),
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
-        'defence_reward': RewTerm(func=damage_interaction_reward, weight=4.0,
+        'defence_reward': RewTerm(func=damage_interaction_reward, weight=10.0,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=3.75,
@@ -649,8 +649,8 @@ def gen_reward_manager(log_terms: bool=True):
         'throw_quality': RewTerm(func=throw_quality_reward, weight=2.0),
         'weapon_distance': RewTerm(func=weapon_distance_reward, weight=0.5),
         'jump_interval': RewTerm(func=jump_interval_reward, weight=4.0, params={'min_interval': 1.0, 'scale': 1.0}),
-        'downslam_penalty': RewTerm(func=downslam_penalty, weight=1.0, params={'penalty_scale': 50.0}),
-        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-100.0, params={'pad': 1.0, 'only_bottom': False}),
+        'downslam_penalty': RewTerm(func=downslam_penalty, weight=1.0, params={'penalty_scale': 20.0}),
+        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-200.0, params={'pad': 1.0, 'only_bottom': False}),
         'throw_quality': RewTerm(func=throw_quality_reward, weight=11.0),
         'weapon_distance': RewTerm(func=weapon_distance_reward, weight=4.0),
 
@@ -664,7 +664,7 @@ def gen_reward_manager(log_terms: bool=True):
     }
     signal_subscriptions = {
         'on_win_reward': ('win_signal', RewTerm(func=on_win_reward, weight=50)),
-        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=75)),
+        'on_knockout_reward': ('knockout_signal', RewTerm(func=on_knockout_reward, weight=100)),
         'on_combo_reward': ('hit_during_stun', RewTerm(func=on_combo_reward, weight=7)),
         'on_equip_reward': ('weapon_equip_signal', RewTerm(func=on_equip_reward, weight=45)),
         'on_drop_reward': ('weapon_drop_signal', RewTerm(func=on_drop_penalty, weight=10))

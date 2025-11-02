@@ -448,11 +448,7 @@ def _parse_args():
 
 if __name__ == "__main__":
 
-<<<<<<< Updated upstream
-    name_prefix="FusedFeatureExtractor7N(DeeperStill)"
-=======
     name_prefix="FusedFeatureExtractor7N_NewRewards"
->>>>>>> Stashed changes
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
     EXP_ROOT = f'checkpoints/{name_prefix}'
@@ -510,12 +506,8 @@ if __name__ == "__main__":
 
 
     policy_kwargs = dict(
-        activation_fn=nn.SiLU,
-<<<<<<< Updated upstream
-            net_arch=[dict(pi=[256, 256, 128], vf=[256, 256, 128, 128])],
-=======
+            activation_fn=nn.SiLU,
             net_arch=[dict(pi=[256, 256, 128, 128], vf=[256, 256, 128, 128])],
->>>>>>> Stashed changes
             features_extractor_class=FusedFeatureExtractor,
             features_extractor_kwargs=FUSED_EXTRACTOR_KW,
         )
