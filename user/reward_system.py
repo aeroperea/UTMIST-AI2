@@ -628,7 +628,7 @@ def gen_reward_manager(log_terms: bool=True):
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=4.0,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
-        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=7.5,
+        'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=3.75,
                                            params={"y_thresh": 0.8, "pos_only": True}),
         'move_dir_reward': RewTerm(func=head_to_opponent, weight=5.0),
         'move_towards_reward': RewTerm(func=head_to_opponent, weight=75.0, params={"threshold" : 0.55, "pos_only": True}),
