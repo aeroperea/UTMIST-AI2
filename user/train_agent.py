@@ -473,7 +473,7 @@ if __name__ == "__main__":
         verbose=1,
         n_steps=2048,            # per-env; total rollout = n_steps * n_envs
         batch_size=16384,        # divides total rollout; 65536/16384 = 4 minibatches
-        n_epochs=5,              # 4 minibatches * 4 epochs = 16 SGD passes / update
+        n_epochs=4,              # 4 minibatches * 4 epochs = 16 SGD passes / update
         learning_rate=2.25e-4,    # with LR cosine → ~3e-5 end (your callback handles it)
         gamma=0.997,
         gae_lambda=0.96,
