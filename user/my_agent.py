@@ -21,7 +21,7 @@ from user.custom_feature_extractor import _mirror_action
 
 # anchor: defaults
 FUSED_EXTRACTOR_KW = dict(
-    features_dim=256,
+    features_dim=512,
     hidden_dim=512,
     enum_fields=observation_fields,
     xy_player=[0, 1],
@@ -32,7 +32,7 @@ FUSED_EXTRACTOR_KW = dict(
     flip_pair_dx=True,
     invert_facing=False,
     use_compile=False,
-    n_blocks=7
+    n_blocks=8
 )
 
 # anchor: spec_env
@@ -97,7 +97,7 @@ class SubmittedAgent(Agent):
         features_dim: Optional[int],
         n_blocks: Optional[int]
     ) -> Dict[str, Any]:
-        net_arch = dict(pi=[256,256,128,128], vf=[256,256,128,128])
+        net_arch = dict(pi=[512,256,256,128,128], vf=[512,256,256,128,128])
         if pi_shape is not None:
             net_arch["pi"] = list(pi_shape)
         if vf_shape is not None:

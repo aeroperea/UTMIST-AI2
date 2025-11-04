@@ -448,7 +448,7 @@ def _parse_args():
 
 if __name__ == "__main__":
 
-    name_prefix="FusedFeatureExtractor7N_NewRewards"
+    name_prefix="FusedFeatureExtractor8N"
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
     EXP_ROOT = f'checkpoints/{name_prefix}'
@@ -474,7 +474,7 @@ if __name__ == "__main__":
         n_steps=2048,            # per-env; total rollout = n_steps * n_envs
         batch_size=16384,        # divides total rollout; 65536/16384 = 4 minibatches
         n_epochs=4,              # 4 minibatches * 4 epochs = 16 SGD passes / update
-        learning_rate=2.25e-4,    # with LR cosine → ~3e-5 end (your callback handles it)
+        learning_rate=2.75e-4,    # with LR cosine → ~3e-5 end (your callback handles it)
         gamma=0.997,
         gae_lambda=0.96,
         ent_coef=0.02,           # decay with your EntropyScheduleCallback
@@ -490,7 +490,7 @@ if __name__ == "__main__":
 
     # features_extractor_kwargs
     FUSED_EXTRACTOR_KW = dict(
-        features_dim=256,
+        features_dim=512,
         hidden_dim=512,
         enum_fields=observation_fields,
         xy_player=[0, 1],
@@ -501,13 +501,13 @@ if __name__ == "__main__":
         flip_pair_dx=True,
         invert_facing=False,
         use_compile=False,
-        n_blocks=7  # <--- set 4 first; try 6 if value underfits
+        n_blocks=8  # <--- set 4 first; try 6 if value underfits
     )
 
 
     policy_kwargs = dict(
             activation_fn=nn.SiLU,
-            net_arch=[dict(pi=[256, 256, 128, 128], vf=[256, 256, 128, 128])],
+            net_arch=[dict(pi=[512, 256, 256, 128, 128], vf=[512, 256, 256, 128, 128])],
             features_extractor_class=FusedFeatureExtractor,
             features_extractor_kwargs=FUSED_EXTRACTOR_KW,
         )

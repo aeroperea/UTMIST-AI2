@@ -11,7 +11,7 @@ pygame.init()
 
 # anchor: config
 # primary checkpoint + optional alternate
-path: str = "checkpoints/FusedFeatureExtractor7N_NewRewards_5499912_steps.zip"
+path: str = "/home/aero/ML/RL/UTMIST-AI2/checkpoints/FusedFeatureExtractor8N/FusedFeatureExtractor8N_28499544_steps.zip"
 pathAlt: Optional[str] = None
 
 # # primary architecture; set any to None to use defaults baked into SubmittedAgent
