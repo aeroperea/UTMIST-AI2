@@ -80,7 +80,7 @@ def damage_interaction_reward(
 
 def _update_spam_tracker(p_obj: Any,
                          cur_attack_idx: int,
-                         window_frames: int = 5,
+                         window_frames: int = 7,
                          inc: float = 1.0,
                          decay_per_step: float = 0.15) -> float:
     # persistent fields on the player object
