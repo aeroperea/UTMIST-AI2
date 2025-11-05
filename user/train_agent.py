@@ -448,7 +448,7 @@ def _parse_args():
 
 if __name__ == "__main__":
 
-    name_prefix="FusedFeatureExtractor8N"
+    name_prefix="FusedFeatureExtractor8N2"
 
     # ---- where checkpoints live (read by DirSelfPlay* and written by callback) ----
     EXP_ROOT = f'checkpoints/{name_prefix}'
