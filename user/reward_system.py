@@ -635,7 +635,7 @@ def gen_reward_manager(log_terms: bool=True):
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
-            weight=44.0,
+            weight=55.0,
             params=dict(distance_thresh=1.75, near_bonus_scale=1.0, far_penalty_scale=1.25),
         ),
         'idle_penalty': RewTerm(func=idle_penalty, weight=15.0, params={'speed_thresh': 0.7, 'ema_tau': 0.35}),
@@ -648,8 +648,8 @@ def gen_reward_manager(log_terms: bool=True):
         # 'jump_interval': RewTerm(func=jump_interval_reward, weight=4.0, params={'min_interval': 1.0, 'scale': 1.0}),
         # 'downslam_penalty': RewTerm(func=downslam_penalty, weight=1.0, params={'penalty_scale': 20.0}),
         'fell_off_map': RewTerm(func=fell_off_map_event, weight=-1000.0, params={'pad': 1.0, 'only_bottom': False}),
-        # 'throw_quality': RewTerm(func=throw_quality_reward, weight=11.0),
-        # 'weapon_distance': RewTerm(func=weapon_distance_reward, weight=4.5),
+        'throw_quality': RewTerm(func=throw_quality_reward, weight=21.0),
+        'weapon_distance': RewTerm(func=weapon_distance_reward, weight=8.5),
 
         'spam_penalty': RewTerm(
             func=spam_penalty,
