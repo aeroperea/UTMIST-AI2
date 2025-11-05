@@ -623,15 +623,15 @@ def gen_reward_manager(log_terms: bool=True):
     reward_functions = {
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=1.0),
-        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*67),
+        'damage_reward':  RewTerm(func=damage_interaction_reward, weight=(140*76),
                                   params={"mode": RewardMode.ASYMMETRIC_OFFENSIVE}),
         'defence_reward': RewTerm(func=damage_interaction_reward, weight=10.0,
                                   params={"mode": RewardMode.ASYMMETRIC_DEFENSIVE}),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         'platform_aware_approach': RewTerm(func=platform_aware_approach, weight=3.75,
                                            params={"y_thresh": 0.8, "pos_only": True}),
-        'move_dir_reward': RewTerm(func=head_to_opponent, weight=10.0),
-        'move_towards_reward': RewTerm(func=head_to_opponent, weight=100.0, params={"threshold" : 0.55, "pos_only": True}),
+        'move_dir_reward': RewTerm(func=head_to_opponent, weight=20.0),
+        'move_towards_reward': RewTerm(func=head_to_opponent, weight=110.0, params={"threshold" : 0.55, "pos_only": True}),
         # 'useless_attk_penalty': RewTerm(func=penalize_useless_attacks_shaped, weight=0.044, params={"distance_thresh" : 2.75, "scale" : 1.25}),
         'attack_quality': RewTerm(
             func=attack_quality_reward,
@@ -647,7 +647,7 @@ def gen_reward_manager(log_terms: bool=True):
         'spam_penalty': RewTerm(func=spam_penalty, weight=20.0, params={'attack_thresh': 3}),
         # 'jump_interval': RewTerm(func=jump_interval_reward, weight=4.0, params={'min_interval': 1.0, 'scale': 1.0}),
         # 'downslam_penalty': RewTerm(func=downslam_penalty, weight=1.0, params={'penalty_scale': 20.0}),
-        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-500.0, params={'pad': 1.0, 'only_bottom': False}),
+        'fell_off_map': RewTerm(func=fell_off_map_event, weight=-1000.0, params={'pad': 1.0, 'only_bottom': False}),
         # 'throw_quality': RewTerm(func=throw_quality_reward, weight=11.0),
         # 'weapon_distance': RewTerm(func=weapon_distance_reward, weight=4.5),
 
